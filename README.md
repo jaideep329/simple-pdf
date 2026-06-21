@@ -34,7 +34,10 @@ detaches the DMG.
 When the app is running, it hosts a local HTTP MCP server named `simple-pdf` at
 `http://127.0.0.1:8082/mcp`. The server exposes live reader state and commands:
 `get_current_page`, `get_page`, `get_selection`, `list_recent_selections`,
-`list_highlights`, `open_at_page`, and `search`.
+`list_highlights`, `open_at_page`, and `search` — plus comment tools
+(`list_comments`, `get_comment`, `add_comment`, `reply_to_comment`,
+`resolve_comment`, `reopen_comment`) for the agent to read and answer the
+threads you attach to passages.
 
 On startup the app writes discovery files under all of these Application Support
 directories so agents can find it by either app name or repo name:

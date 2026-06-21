@@ -300,6 +300,8 @@ final class ReaderPDFView: PDFView, StickyNotePresenting {
     private var didDragAnnotation = false
     private var selectionPopover: SelectionPopoverView?
     private var pendingPopoverShow: DispatchWorkItem?
+    private var regionStart: CGPoint?
+    private var regionMarquee: NSView?
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -310,6 +312,11 @@ final class ReaderPDFView: PDFView, StickyNotePresenting {
     override func mouseDown(with event: NSEvent) {
         hideSelectionPopover()
         let viewPoint = convert(event.locationInWindow, from: nil)
+
+        if store?.isRegionCommentMode == true {
+            beginRegionDrag(at: viewPoint)
+            return
+        }
 
         if let hit = noteAnnotation(at: viewPoint) {
             closeStickyNote()
@@ -332,6 +339,11 @@ final class ReaderPDFView: PDFView, StickyNotePresenting {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if regionStart != nil {
+            updateRegionDrag(to: convert(event.locationInWindow, from: nil))
+            return
+        }
+
         guard
             let draggedAnnotation,
             let draggedPage
@@ -353,6 +365,11 @@ final class ReaderPDFView: PDFView, StickyNotePresenting {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if regionStart != nil {
+            endRegionDrag()
+            return
+        }
+
         if let draggedAnnotation, let draggedPage {
             if didDragAnnotation {
                 store?.annotationDidChange()
@@ -473,11 +490,86 @@ final class ReaderPDFView: PDFView, StickyNotePresenting {
     }
 
     override func cancelOperation(_ sender: Any?) {
-        if selectionPopover != nil {
+        if store?.isRegionCommentMode == true || regionStart != nil {
+            cancelRegionDrag()
+        } else if selectionPopover != nil {
             hideSelectionPopover()
         } else {
             super.cancelOperation(sender)
         }
+    }
+
+    // MARK: - Region comment drag
+
+    private func beginRegionDrag(at point: CGPoint) {
+        regionStart = point
+        let marquee = NSView(frame: NSRect(origin: point, size: .zero))
+        marquee.wantsLayer = true
+        marquee.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        marquee.layer?.borderWidth = 1.5
+        marquee.layer?.cornerRadius = 3
+        marquee.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.15).cgColor
+        addSubview(marquee)
+        regionMarquee = marquee
+    }
+
+    private func updateRegionDrag(to point: CGPoint) {
+        guard let start = regionStart else { return }
+        regionMarquee?.frame = NSRect(
+            x: min(point.x, start.x),
+            y: min(point.y, start.y),
+            width: abs(point.x - start.x),
+            height: abs(point.y - start.y)
+        )
+    }
+
+    private func cancelRegionDrag() {
+        regionMarquee?.removeFromSuperview()
+        regionMarquee = nil
+        regionStart = nil
+        store?.isRegionCommentMode = false
+    }
+
+    private func endRegionDrag() {
+        let marquee = regionMarquee
+        regionMarquee = nil
+        regionStart = nil
+        store?.isRegionCommentMode = false
+
+        guard let marquee else { return }
+        let viewRect = marquee.frame
+        marquee.removeFromSuperview() // remove before snapshot so it is not captured
+
+        guard
+            viewRect.width > 8, viewRect.height > 8,
+            let document, let store,
+            let page = page(for: CGPoint(x: viewRect.midX, y: viewRect.midY), nearest: true)
+        else {
+            return
+        }
+
+        let pageIndex = document.index(for: page)
+        guard pageIndex != NSNotFound else { return }
+
+        let pageRect = convert(viewRect, to: page)
+        let bounds = CommentRect(
+            x: Double(pageRect.minX),
+            y: Double(pageRect.minY),
+            width: Double(pageRect.width),
+            height: Double(pageRect.height)
+        )
+        store.startRegionComment(
+            pageIndex: pageIndex,
+            bounds: bounds,
+            imagePNGBase64: snapshotPNGBase64(viewRect: viewRect)
+        )
+    }
+
+    private func snapshotPNGBase64(viewRect: NSRect) -> String? {
+        guard let rep = bitmapImageRepForCachingDisplay(in: viewRect) else { return nil }
+        cacheDisplay(in: viewRect, to: rep)
+        guard let data = rep.representation(using: .png, properties: [:]) else { return nil }
+        return data.base64EncodedString()
     }
 
     private func showSelectionPopover() {
@@ -784,6 +876,10 @@ final class SelectionPopoverView: NSView {
             },
             onCopyQuote: { store?.copyQuote() },
             onCopyLink: { store?.copySelectionLink() },
+            onComment: { [weak pdfView] in
+                store?.startTextComment()
+                pdfView?.hideSelectionPopover()
+            },
             onDismiss: { [weak pdfView] in
                 pdfView?.hideSelectionPopover()
             }
@@ -811,6 +907,7 @@ struct SelectionPopoverContent: View {
     let onHighlight: () -> Void
     let onCopyQuote: () -> Void
     let onCopyLink: () -> Void
+    let onComment: () -> Void
     let onDismiss: () -> Void
 
     @State private var didCopy = false
@@ -834,6 +931,7 @@ struct SelectionPopoverContent: View {
                 onCopyLink()
                 confirmCopy()
             },
+            Action(id: "comment", symbol: "text.bubble", title: "Comment") { onComment() },
         ]
     }
 

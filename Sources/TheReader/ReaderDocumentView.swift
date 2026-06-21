@@ -9,8 +9,16 @@ struct ReaderDocumentView: View {
             PDFOutlineSidebar()
                 .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 380)
         } detail: {
-            PDFPanel()
-                .navigationTitle(store.displayTitle)
+            HStack(spacing: 0) {
+                PDFPanel()
+                    .navigationTitle(store.displayTitle)
+
+                if store.activeCommentThread != nil {
+                    Divider()
+                    CommentThreadPanel()
+                        .frame(width: 340)
+                }
+            }
         }
         .toolbar {
             ToolbarItemGroup {
@@ -33,6 +41,14 @@ struct ReaderDocumentView: View {
                     Image(systemName: "note.text.badge.plus")
                 }
                 .help("Add Note")
+                .disabled(store.document == nil)
+
+                Button {
+                    store.isRegionCommentMode.toggle()
+                } label: {
+                    Image(systemName: store.isRegionCommentMode ? "viewfinder.circle.fill" : "viewfinder")
+                }
+                .help("Ask about a region — drag a box over a figure/equation")
                 .disabled(store.document == nil)
             }
 

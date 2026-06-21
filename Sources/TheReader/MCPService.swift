@@ -28,6 +28,23 @@ final class ReaderMCPBridge {
     func open(pageNumber: Int, path: String?, quote: String?) -> Bool {
         store?.mcpOpen(pageNumber: pageNumber, path: path, quote: quote) ?? false
     }
+
+    func comments() -> [CommentThread] { store?.commentThreads ?? [] }
+    func pageText(_ page: Int) -> String? { store?.mcpPageInfo(forPageNumber: page)?.text }
+
+    func addComment(body: String, page: Int?, quote: String?) -> CommentThread? {
+        guard let store else { return nil }
+        let anchor = store.textAnchor(page: page, quote: quote)
+        return store.addComment(anchor: anchor, body: body, author: .agent)
+    }
+
+    func reply(id: String, body: String) -> CommentThread? {
+        store?.replyToComment(id: id, body: body, author: .agent)
+    }
+
+    func setStatus(id: String, status: CommentStatus) -> CommentThread? {
+        store?.setCommentStatus(id: id, status: status)
+    }
 }
 
 // MARK: - Service
@@ -51,6 +68,12 @@ final class MCPService: @unchecked Sendable {
         "list_highlights",
         "open_at_page",
         "search",
+        "list_comments",
+        "get_comment",
+        "add_comment",
+        "reply_to_comment",
+        "resolve_comment",
+        "reopen_comment",
     ]
 
     private let bridge: ReaderMCPBridge
@@ -226,6 +249,85 @@ final class MCPService: @unchecked Sendable {
             let limit = args["limit"]?.intValue ?? 20
             return text(json(await bridge.search(query: query, limit: limit)))
 
+        case "list_comments":
+            var threads = await bridge.comments()
+            if let status = args["status"]?.stringValue, let wanted = CommentStatus(rawValue: status) {
+                threads = threads.filter { $0.status == wanted }
+            }
+            if let page = args["page"]?.intValue {
+                threads = threads.filter { $0.anchor.page == page }
+            }
+            threads.sort { $0.updatedAt > $1.updatedAt }
+            if let limit = args["limit"]?.intValue, limit > 0, threads.count > limit {
+                threads = Array(threads.prefix(limit))
+            }
+            // Drop the heavy region image from the list; it's returned by get_comment.
+            return text(json(threads.map(Self.strippingImage)))
+
+        case "get_comment":
+            guard let id = args["id"]?.stringValue else {
+                return text("Missing required argument: id", isError: true)
+            }
+            guard let thread = await bridge.comments().first(where: { $0.id == id }) else {
+                return text("No comment with id \(id).", isError: true)
+            }
+            let pageText = await bridge.pageText(thread.anchor.page)
+            var content: [Tool.Content] = [
+                .text(
+                    text: json(CommentWithContext(thread: Self.strippingImage(thread), pageText: pageText)),
+                    annotations: nil,
+                    _meta: nil
+                )
+            ]
+            // Region anchors carry a PNG snapshot — hand it to the agent as a real image block.
+            if thread.anchor.kind == .region, let png = thread.anchor.imagePNGBase64 {
+                content.append(.image(data: png, mimeType: "image/png", annotations: nil, _meta: nil))
+            }
+            return CallTool.Result(content: content, isError: false)
+
+        case "add_comment":
+            guard let body = args["body"]?.stringValue, !body.isEmpty else {
+                return text("Missing required argument: body", isError: true)
+            }
+            guard let thread = await bridge.addComment(
+                body: body,
+                page: args["page"]?.intValue,
+                quote: args["quote"]?.stringValue
+            ) else {
+                return text("No PDF is open.", isError: true)
+            }
+            return text(json(thread))
+
+        case "reply_to_comment":
+            guard let id = args["id"]?.stringValue else {
+                return text("Missing required argument: id", isError: true)
+            }
+            guard let body = args["body"]?.stringValue, !body.isEmpty else {
+                return text("Missing required argument: body", isError: true)
+            }
+            guard let updated = await bridge.reply(id: id, body: body) else {
+                return text("No comment with id \(id).", isError: true)
+            }
+            return text(json(updated))
+
+        case "resolve_comment":
+            guard let id = args["id"]?.stringValue else {
+                return text("Missing required argument: id", isError: true)
+            }
+            guard let updated = await bridge.setStatus(id: id, status: .resolved) else {
+                return text("No comment with id \(id).", isError: true)
+            }
+            return text(json(updated))
+
+        case "reopen_comment":
+            guard let id = args["id"]?.stringValue else {
+                return text("Missing required argument: id", isError: true)
+            }
+            guard let updated = await bridge.setStatus(id: id, status: .open) else {
+                return text("No comment with id \(id).", isError: true)
+            }
+            return text(json(updated))
+
         default:
             return text("Unknown tool: \(params.name)", isError: true)
         }
@@ -291,6 +393,64 @@ final class MCPService: @unchecked Sendable {
                         "limit": prop("number", "Maximum number of matches to return. Defaults to 20."),
                     ],
                     required: ["query"]
+                )
+            ),
+            Tool(
+                name: "list_comments",
+                description: "Comment threads the user attached to passages/regions of the PDF, newest-first. Each thread has an anchor (page, quoted text, optional region image), a status (open or resolved), and a message history. To answer the user's questions, list open threads and reply to each.",
+                inputSchema: objectSchema(
+                    properties: [
+                        "status": prop("string", "Filter by status: \"open\" or \"resolved\"."),
+                        "page": prop("number", "Filter to a 1-based page number."),
+                        "limit": prop("number", "Maximum number of threads to return."),
+                    ]
+                )
+            ),
+            Tool(
+                name: "get_comment",
+                description: "One comment thread by id, plus the text of the page it is anchored to for context.",
+                inputSchema: objectSchema(
+                    properties: ["id": prop("string", "Comment thread id.")],
+                    required: ["id"]
+                )
+            ),
+            Tool(
+                name: "add_comment",
+                description: "Start a new comment thread anchored to a page (and optional quoted text). Use this to flag something to the user.",
+                inputSchema: objectSchema(
+                    properties: [
+                        "body": prop("string", "The comment text (markdown)."),
+                        "page": prop("number", "1-based page to anchor to. Defaults to the current page."),
+                        "quote": prop("string", "Optional quoted text on that page to anchor to."),
+                    ],
+                    required: ["body"]
+                )
+            ),
+            Tool(
+                name: "reply_to_comment",
+                description: "Post a reply into an existing comment thread. Replies are attributed to the agent and appear in the reader.",
+                inputSchema: objectSchema(
+                    properties: [
+                        "id": prop("string", "Comment thread id."),
+                        "body": prop("string", "The reply text (markdown)."),
+                    ],
+                    required: ["id", "body"]
+                )
+            ),
+            Tool(
+                name: "resolve_comment",
+                description: "Mark a comment thread resolved.",
+                inputSchema: objectSchema(
+                    properties: ["id": prop("string", "Comment thread id.")],
+                    required: ["id"]
+                )
+            ),
+            Tool(
+                name: "reopen_comment",
+                description: "Reopen a resolved comment thread.",
+                inputSchema: objectSchema(
+                    properties: ["id": prop("string", "Comment thread id.")],
+                    required: ["id"]
                 )
             ),
         ]
@@ -365,6 +525,13 @@ final class MCPService: @unchecked Sendable {
         guard let data = try? encoder.encode(value) else { return }
         try? data.write(to: url, options: .atomic)
     }
+
+    /// A copy of the thread without the inline region PNG (kept out of list/JSON payloads).
+    private static func strippingImage(_ thread: CommentThread) -> CommentThread {
+        var copy = thread
+        copy.anchor.imagePNGBase64 = nil
+        return copy
+    }
 }
 
 // MARK: - Helpers
@@ -372,6 +539,11 @@ final class MCPService: @unchecked Sendable {
 private struct MCPEndpointFile: Codable {
     let url: String
     let token: String
+}
+
+private struct CommentWithContext: Encodable {
+    let thread: CommentThread
+    let pageText: String?
 }
 
 private struct MCPDiscoveryFile: Codable {

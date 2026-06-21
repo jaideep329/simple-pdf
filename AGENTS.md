@@ -28,3 +28,9 @@ Useful MCP tools:
 - `list_highlights`
 - `open_at_page`
 - `search`
+- `list_comments`
+- `get_comment`
+- `add_comment`
+- `reply_to_comment`
+- `resolve_comment`
+- `reopen_comment`

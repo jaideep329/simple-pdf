@@ -53,11 +53,15 @@ final class ReaderStore: ObservableObject {
     @Published private(set) var zoomPercentText = "Fit"
     @Published var selectedText = ""
     @Published private(set) var selectionHistory: [SelectionEntry] = []
+    @Published private(set) var commentThreads: [CommentThread] = []
+    @Published var activeCommentThreadID: String?
+    @Published var isRegionCommentMode = false
     @Published var errorMessage: String?
 
     weak var pdfView: PDFView?
 
     private let stateStore = PDFDocumentStateStore()
+    private let commentStore = CommentStore()
     private let pdfSaveQueue = DispatchQueue(label: "SimplePDF.PDFSave", qos: .utility)
     private var pendingPDFSaveWorkItem: DispatchWorkItem?
     private var pendingSelectionRecord: DispatchWorkItem?
@@ -162,6 +166,9 @@ final class ReaderStore: ObservableObject {
         selectedText = ""
         pendingSelectionRecord?.cancel()
         selectionHistory = []
+        commentThreads = commentStore.loadThreads(forDocumentAt: standardizedURL)
+        activeCommentThreadID = nil
+        isRegionCommentMode = false
         currentPageIndex = clampedPageIndex
         updateCurrentOutlineSelection(for: clampedPageIndex)
         currentViewState = PDFDocumentViewState(
@@ -638,6 +645,132 @@ final class ReaderStore: ObservableObject {
         return pageText[lower..<upper]
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - Comments
+
+    @discardableResult
+    func addComment(
+        anchor: CommentAnchor,
+        body: String,
+        author: CommentAuthor,
+        agentName: String? = nil
+    ) -> CommentThread? {
+        guard let documentURL else { return nil }
+
+        let now = Date()
+        var messages: [CommentMessage] = []
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            messages.append(
+                CommentMessage(id: UUID().uuidString, author: author, agentName: agentName, body: trimmed, createdAt: now)
+            )
+        }
+
+        let thread = CommentThread(
+            id: UUID().uuidString,
+            documentPath: documentURL.path,
+            anchor: anchor,
+            status: .open,
+            createdAt: now,
+            updatedAt: now,
+            messages: messages
+        )
+
+        commentThreads.insert(thread, at: 0)
+        persistComments()
+        return thread
+    }
+
+    @discardableResult
+    func replyToComment(id: String, body: String, author: CommentAuthor, agentName: String? = nil) -> CommentThread? {
+        guard let index = commentThreads.firstIndex(where: { $0.id == id }) else { return nil }
+
+        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return commentThreads[index] }
+
+        commentThreads[index].messages.append(
+            CommentMessage(id: UUID().uuidString, author: author, agentName: agentName, body: trimmed, createdAt: Date())
+        )
+        commentThreads[index].updatedAt = Date()
+        persistComments()
+        return commentThreads[index]
+    }
+
+    @discardableResult
+    func setCommentStatus(id: String, status: CommentStatus) -> CommentThread? {
+        guard let index = commentThreads.firstIndex(where: { $0.id == id }) else { return nil }
+
+        commentThreads[index].status = status
+        commentThreads[index].updatedAt = Date()
+        persistComments()
+        return commentThreads[index]
+    }
+
+    var activeCommentThread: CommentThread? {
+        commentThreads.first { $0.id == activeCommentThreadID }
+    }
+
+    func openComment(id: String) { activeCommentThreadID = id }
+    func closeActiveComment() { activeCommentThreadID = nil }
+
+    /// Creates a comment anchored to the current text selection and opens its thread.
+    @discardableResult
+    func startTextComment() -> String? {
+        guard
+            let pdfView,
+            let document,
+            let selection = pdfView.currentSelection,
+            let page = selection.pages.first
+        else {
+            return nil
+        }
+
+        let pageIndex = document.index(for: page)
+        guard pageIndex != NSNotFound else { return nil }
+
+        let quote = selection.string?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+
+        var union = CGRect.null
+        for line in selection.selectionsByLine() where line.pages.contains(where: { $0 === page }) {
+            union = union.union(line.bounds(for: page))
+        }
+        let bounds: CommentRect? = (union.isNull || union.isEmpty)
+            ? nil
+            : CommentRect(x: Double(union.minX), y: Double(union.minY), width: Double(union.width), height: Double(union.height))
+
+        let anchor = CommentAnchor(kind: .text, page: pageIndex + 1, quote: quote, bounds: bounds, imagePNGBase64: nil)
+        let thread = addComment(anchor: anchor, body: "", author: .human)
+        activeCommentThreadID = thread?.id
+        return thread?.id
+    }
+
+    /// Creates a region-anchored comment (with a snapshot PNG) and opens its thread.
+    @discardableResult
+    func startRegionComment(pageIndex: Int, bounds: CommentRect, imagePNGBase64: String?) -> String? {
+        guard document != nil else { return nil }
+        let anchor = CommentAnchor(kind: .region, page: pageIndex + 1, quote: nil, bounds: bounds, imagePNGBase64: imagePNGBase64)
+        let thread = addComment(anchor: anchor, body: "", author: .human)
+        activeCommentThreadID = thread?.id
+        return thread?.id
+    }
+
+    @discardableResult
+    func addHumanReply(threadID: String, body: String) -> CommentThread? {
+        replyToComment(id: threadID, body: body, author: .human)
+    }
+
+    /// Builds a text anchor for the agent's `add_comment` (page + optional quote;
+    /// bounds are unknown until the app locates the quote).
+    func textAnchor(page: Int?, quote: String?) -> CommentAnchor {
+        let resolvedPage = page ?? (currentPageIndex + 1)
+        let trimmedQuote = quote?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        return CommentAnchor(kind: .text, page: max(1, resolvedPage), quote: trimmedQuote, bounds: nil, imagePNGBase64: nil)
+    }
+
+    private func persistComments() {
+        guard let documentURL else { return }
+        commentStore.saveThreads(commentThreads, forDocumentAt: documentURL)
     }
 
     private func restoreLastPDF() {
