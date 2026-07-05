@@ -130,3 +130,48 @@ struct AgentAnswerBar: View {
         return parts.joined(separator: " ")
     }
 }
+
+/// Live draft bubble shown at the bottom of the thread's message list while an
+/// engine run is active: the streamed in-progress answer (token-level for
+/// Claude Code, per-event for Codex), or a placeholder until text arrives. It
+/// disappears when the run ends and the real agent message is appended.
+struct AgentStreamingBubble: View {
+    @ObservedObject var controller: AgentCLIController
+    let thread: CommentThread
+
+    var body: some View {
+        if let engine = controller.runningEngine(forThread: thread.id) {
+            let partial = controller.partialAnswer(forThread: thread.id)
+
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        AgentEngineIcon(engine: engine, size: 9)
+                            .foregroundStyle(.secondary)
+                        Text(engine.displayName)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        ProgressView()
+                            .controlSize(.mini)
+                    }
+
+                    Group {
+                        if let partial, !partial.isEmpty {
+                            Text(partial)
+                        } else {
+                            Text("Thinking…")
+                                .italic()
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                }
+                Spacer(minLength: 28)
+            }
+        }
+    }
+}

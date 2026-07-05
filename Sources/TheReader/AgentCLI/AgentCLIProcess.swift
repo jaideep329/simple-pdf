@@ -79,12 +79,15 @@ enum AgentCLIProcess {
     /// Runs the CLI to completion off the main thread. Honors Task cancellation
     /// (SIGTERM) and enforces `timeout` (SIGTERM, then SIGKILL after a grace
     /// period). stdin is /dev/null so an unexpected interactive prompt makes the
-    /// CLI fail fast instead of hanging.
+    /// CLI fail fast instead of hanging. `onStdoutLine`, when given, is invoked
+    /// on a background queue with each complete stdout line as it arrives —
+    /// used to stream JSONL events while the CLI is still running.
     static func run(
         executablePath: String,
         arguments: [String],
         workingDirectory: URL,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        onStdoutLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> AgentProcessResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executablePath)
@@ -109,15 +112,26 @@ enum AgentCLIProcess {
             throw AgentCLIError.launchFailed(error.localizedDescription)
         }
 
-        let stdoutBuffer = PipeBuffer()
+        let stdoutBuffer = LineStreamBuffer(onLine: onStdoutLine)
         let stderrBuffer = PipeBuffer()
         let drainGroup = DispatchGroup()
-        for (pipe, buffer) in [(stdoutPipe, stdoutBuffer), (stderrPipe, stderrBuffer)] {
-            drainGroup.enter()
-            DispatchQueue.global(qos: .utility).async {
-                buffer.append(pipe.fileHandleForReading.readDataToEndOfFile())
+
+        drainGroup.enter()
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            if chunk.isEmpty {
+                handle.readabilityHandler = nil
+                stdoutBuffer.finish()
                 drainGroup.leave()
+            } else {
+                stdoutBuffer.append(chunk)
             }
+        }
+
+        drainGroup.enter()
+        DispatchQueue.global(qos: .utility).async {
+            stderrBuffer.append(stderrPipe.fileHandleForReading.readDataToEndOfFile())
+            drainGroup.leave()
         }
 
         let pid = process.processIdentifier
@@ -165,6 +179,64 @@ private final class PipeBuffer: @unchecked Sendable {
         lock.lock()
         data.append(chunk)
         lock.unlock()
+    }
+
+    var text: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+}
+
+/// Accumulates the full stream (for the final parse) and, when a line callback
+/// is set, splits arriving chunks into complete lines and emits each one.
+private final class LineStreamBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+    private var pendingLine = Data()
+    private let onLine: (@Sendable (String) -> Void)?
+
+    init(onLine: (@Sendable (String) -> Void)?) {
+        self.onLine = onLine
+    }
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        data.append(chunk)
+
+        guard onLine != nil else {
+            lock.unlock()
+            return
+        }
+
+        pendingLine.append(chunk)
+        var lines: [String] = []
+        while let newlineIndex = pendingLine.firstIndex(of: UInt8(ascii: "\n")) {
+            let lineData = pendingLine.subdata(in: pendingLine.startIndex..<newlineIndex)
+            pendingLine.removeSubrange(pendingLine.startIndex...newlineIndex)
+            if let line = String(data: lineData, encoding: .utf8), !line.isEmpty {
+                lines.append(line)
+            }
+        }
+        lock.unlock()
+
+        // Emit outside the lock: the callback may do arbitrary work.
+        for line in lines {
+            onLine?(line)
+        }
+    }
+
+    func finish() {
+        lock.lock()
+        let remainder = pendingLine
+        pendingLine = Data()
+        lock.unlock()
+
+        if let onLine,
+           let line = String(data: remainder, encoding: .utf8),
+           !line.trimmingCharacters(in: .whitespaces).isEmpty {
+            onLine(line)
+        }
     }
 
     var text: String {

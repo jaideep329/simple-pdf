@@ -13,6 +13,9 @@ final class AgentCLIController: ObservableObject {
     @Published private(set) var activeRuns: [String: AgentEngineKind] = [:]
     /// threadID → last error, shown inline in the thread panel until dismissed.
     @Published private(set) var errors: [String: String] = [:]
+    /// threadID → in-progress answer text, streamed while a run is active and
+    /// rendered as a live draft bubble; cleared when the run ends.
+    @Published private(set) var partialAnswers: [String: String] = [:]
 
     weak var store: ReaderStore?
 
@@ -30,6 +33,10 @@ final class AgentCLIController: ObservableObject {
 
     func error(forThread threadID: String) -> String? {
         errors[threadID]
+    }
+
+    func partialAnswer(forThread threadID: String) -> String? {
+        partialAnswers[threadID]
     }
 
     func clearError(forThread threadID: String) {
@@ -115,6 +122,16 @@ final class AgentCLIController: ObservableObject {
         let workingDirectory = Self.scratchDirectory()
         let timeout = Self.runTimeout
 
+        // Streams the accumulated in-progress answer into the live draft
+        // bubble. Arrives on a background queue; the run guard drops updates
+        // that race in after a cancel or finish.
+        let onPartial: @Sendable (String) -> Void = { [weak self] text in
+            DispatchQueue.main.async {
+                guard let self, self.activeRuns[threadID] != nil else { return }
+                self.partialAnswers[threadID] = text
+            }
+        }
+
         tasks[threadID] = Task.detached { [weak self] in
             let engine = engineKind.makeEngine()
             do {
@@ -127,7 +144,8 @@ final class AgentCLIController: ObservableObject {
                             prompt: resumePrompt,
                             sessionID: sessionID,
                             workingDirectory: workingDirectory,
-                            timeout: timeout
+                            timeout: timeout,
+                            onPartial: onPartial
                         )
                     } catch is CancellationError {
                         throw CancellationError()
@@ -141,7 +159,8 @@ final class AgentCLIController: ObservableObject {
                             prompt: replayPrompt,
                             sessionID: nil,
                             workingDirectory: workingDirectory,
-                            timeout: timeout
+                            timeout: timeout,
+                            onPartial: onPartial
                         )
                     }
                 } else {
@@ -149,7 +168,8 @@ final class AgentCLIController: ObservableObject {
                         prompt: replayPrompt,
                         sessionID: nil,
                         workingDirectory: workingDirectory,
-                        timeout: timeout
+                        timeout: timeout,
+                        onPartial: onPartial
                     )
                 }
 
@@ -213,6 +233,7 @@ final class AgentCLIController: ObservableObject {
     private func clearRun(threadID: String) {
         activeRuns[threadID] = nil
         tasks[threadID] = nil
+        partialAnswers[threadID] = nil
     }
 
     // MARK: - Prompt assembly

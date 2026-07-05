@@ -27,6 +27,10 @@ struct CommentThreadPanel: View {
                         ForEach(thread.messages) { message in
                             messageRow(message)
                         }
+
+                        if AgentCLIFeature.isEnabled, let agentCLI = store.agentCLI {
+                            AgentStreamingBubble(controller: agentCLI, thread: thread)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)

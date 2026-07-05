@@ -73,14 +73,19 @@ does not embed an LLM.
   - `AgentCLIProcess.swift` — subprocess runner: captures the login-shell PATH
     once (`zsh -l`), resolves the CLI binary, runs with timeout (SIGTERM →
     SIGKILL), Task-cancellation → SIGTERM, stdin = /dev/null so prompts fail
-    fast instead of hanging.
-  - `AgentEngines.swift` — `AgentEngine` protocol + `ClaudeCodeEngine`
-    (`claude -p … --output-format json`, read-only via
-    `--allowedTools Read,Glob,Grep` + disallow list, `--resume <id>`; parses
-    the result event out of the JSON **array** newer CLIs emit) and
-    `CodexEngine` (`codex exec [resume <id>] --json --skip-git-repo-check -c
-    'sandbox_mode="read-only"'`; parses old `msg.*` and new
-    `thread.started`/`item.completed` JSONL shapes; session id best-effort).
+    fast instead of hanging. Optional `onStdoutLine` callback streams complete
+    stdout lines as they arrive (readabilityHandler + line splitting).
+  - `AgentEngines.swift` — `AgentEngine` protocol (with an `onPartial`
+    streaming callback) + `ClaudeCodeEngine` (`claude -p … --output-format
+    stream-json --include-partial-messages --verbose`, read-only via
+    `--allowedTools Read,Glob,Grep` + disallow list, `--resume <id>`;
+    `ClaudeStreamParser` accumulates `content_block_delta` text — reset at
+    `message_start` so tool-use turns don't stick — and captures the final
+    `result` event) and `CodexEngine` (`codex exec [resume <id>] --json
+    --skip-git-repo-check -c 'sandbox_mode="read-only"'`; `CodexStreamParser`
+    streams per-event — `agent_message[_delta]` / `item.completed`; final
+    parse tolerates old `msg.*` and new `thread.started`/`item.completed`
+    shapes; session id best-effort).
   - `AgentCLIController.swift` — ObservableObject owned by `ReaderStore` (only
     when flag on): builds prompts (thread transcript + anchor page ±1 text via
     `mcpPages` + PDF path + MCP-first guidance; region PNG written to the
@@ -101,7 +106,10 @@ does not embed an LLM.
   - `AgentAnswerBar.swift` — strip above the composer in `CommentThreadPanel`:
     sticky engine toggle buttons (select once → every sent message is
     auto-answered by that engine; click again to turn off), thinking + Cancel
-    state, inline dismissible error.
+    state, inline dismissible error. Also `AgentStreamingBubble`: a live draft
+    bubble in the message list fed by `AgentCLIController.partialAnswers`
+    (token-level for Claude, chunk-level for Codex), replaced by the real
+    agent message when the run finishes.
   - `AgentEngineIcons.swift` — Claude/OpenAI brand marks as embedded SVG
     strings rendered via `NSImage` template images (the bundle script copies
     only the bare binary, so `Bundle.module` resources can't be used).

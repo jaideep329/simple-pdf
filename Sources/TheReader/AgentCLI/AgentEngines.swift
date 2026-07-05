@@ -4,13 +4,16 @@ import Foundation
 /// `workingDirectory` and returns the final answer text plus a session id for
 /// resuming (when the CLI exposes one). Passing `sessionID` resumes that
 /// conversation; callers handle fallback-to-replay when a resume fails.
+/// `onPartial` is invoked on a background queue with the accumulated in-progress
+/// answer text as it streams (token-level for Claude, per-event for Codex).
 protocol AgentEngine {
     var kind: AgentEngineKind { get }
     func answer(
         prompt: String,
         sessionID: String?,
         workingDirectory: URL,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        onPartial: @escaping @Sendable (String) -> Void
     ) async throws -> AgentAnswer
 }
 
@@ -22,10 +25,12 @@ extension AgentEngine {
 
 // MARK: - Claude Code
 
-/// `claude -p "<prompt>" --output-format json` → one JSON object on stdout with
-/// `result`, `session_id`, and `is_error`. Read-only is enforced with a
-/// tool allowlist that grants no writes/exec; in `-p` mode any other permission
-/// request is auto-denied, so the process can never hang on an approval prompt.
+/// `claude -p "<prompt>" --output-format stream-json --include-partial-messages`
+/// → JSONL on stdout: `stream_event` lines carry text deltas (streamed to
+/// `onPartial`), and the final `result` line carries `result`, `session_id`,
+/// and `is_error`. Read-only is enforced with a tool allowlist that grants no
+/// writes/exec; in `-p` mode any other permission request is auto-denied, so
+/// the process can never hang on an approval prompt.
 struct ClaudeCodeEngine: AgentEngine {
     let kind = AgentEngineKind.claudeCode
 
@@ -33,7 +38,8 @@ struct ClaudeCodeEngine: AgentEngine {
         prompt: String,
         sessionID: String?,
         workingDirectory: URL,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        onPartial: @escaping @Sendable (String) -> Void
     ) async throws -> AgentAnswer {
         guard let executable = AgentCLIProcess.resolveExecutable(named: kind.executableName) else {
             throw AgentCLIError.notInstalled(kind)
@@ -52,9 +58,12 @@ struct ClaudeCodeEngine: AgentEngine {
         {"mcpServers":{"\(MCPService.serverName)":{"type":"http","url":"\(SimplePDFMCP.url)","headers":{"Authorization":"Bearer \(MCPService.bearerToken)"}}}}
         """
 
+        // stream-json in -p mode requires --verbose.
         var arguments = [
             "-p", prompt,
-            "--output-format", "json",
+            "--output-format", "stream-json",
+            "--include-partial-messages",
+            "--verbose",
             "--mcp-config", mcpConfig,
             "--strict-mcp-config",
             "--allowedTools", "Read,Glob,Grep,\(mcpTools)",
@@ -64,17 +73,19 @@ struct ClaudeCodeEngine: AgentEngine {
             arguments += ["--resume", sessionID]
         }
 
+        let parser = ClaudeStreamParser(onPartial: onPartial)
         let result = try await AgentCLIProcess.run(
             executablePath: executable,
             arguments: arguments,
             workingDirectory: workingDirectory,
-            timeout: timeout
+            timeout: timeout,
+            onStdoutLine: { parser.consume(line: $0) }
         )
         if result.timedOut {
             throw AgentCLIError.timedOut(kind, seconds: Int(timeout))
         }
 
-        if let object = Self.jsonObject(in: result.stdout) {
+        if let object = parser.resultObject ?? Self.jsonObject(in: result.stdout) {
             let text = (object["result"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let newSessionID = object["session_id"] as? String
             let isError = (object["is_error"] as? Bool) ?? false
@@ -130,6 +141,64 @@ struct ClaudeCodeEngine: AgentEngine {
     }
 }
 
+/// Incremental parser for Claude's `stream-json` output: accumulates
+/// `content_block_delta` text into the in-progress answer (reset at each
+/// `message_start`, so intermediate tool-use turns don't stick around) and
+/// captures the final `result` event.
+private final class ClaudeStreamParser: @unchecked Sendable {
+    private let lock = NSLock()
+    private var partial = ""
+    private var result: [String: Any]?
+    private let onPartial: @Sendable (String) -> Void
+
+    init(onPartial: @escaping @Sendable (String) -> Void) {
+        self.onPartial = onPartial
+    }
+
+    func consume(line: String) {
+        guard let data = line.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return
+        }
+
+        var report: String?
+        lock.lock()
+        switch object["type"] as? String {
+        case "stream_event":
+            if let event = object["event"] as? [String: Any] {
+                switch event["type"] as? String {
+                case "message_start":
+                    partial = ""
+                case "content_block_delta":
+                    if let delta = event["delta"] as? [String: Any],
+                       (delta["type"] as? String) == "text_delta",
+                       let text = delta["text"] as? String {
+                        partial += text
+                        report = partial
+                    }
+                default:
+                    break
+                }
+            }
+        case "result":
+            result = object
+        default:
+            break
+        }
+        lock.unlock()
+
+        if let report {
+            onPartial(report)
+        }
+    }
+
+    var resultObject: [String: Any]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return result
+    }
+}
+
 // MARK: - Codex
 
 /// `codex exec "<prompt>" --json` (or `codex exec resume <id> …`) with
@@ -144,7 +213,8 @@ struct CodexEngine: AgentEngine {
         prompt: String,
         sessionID: String?,
         workingDirectory: URL,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        onPartial: @escaping @Sendable (String) -> Void
     ) async throws -> AgentAnswer {
         guard let executable = AgentCLIProcess.resolveExecutable(named: kind.executableName) else {
             throw AgentCLIError.notInstalled(kind)
@@ -161,11 +231,13 @@ struct CodexEngine: AgentEngine {
             prompt
         ]
 
+        let streamer = CodexStreamParser(onPartial: onPartial)
         let result = try await AgentCLIProcess.run(
             executablePath: executable,
             arguments: arguments,
             workingDirectory: workingDirectory,
-            timeout: timeout
+            timeout: timeout,
+            onStdoutLine: { streamer.consume(line: $0) }
         )
         if result.timedOut {
             throw AgentCLIError.timedOut(kind, seconds: Int(timeout))
@@ -232,5 +304,57 @@ struct CodexEngine: AgentEngine {
         }
 
         return (message, sessionID)
+    }
+}
+
+/// Incremental parser for Codex's `--json` stream. Codex mostly emits whole
+/// items (`item.completed` / `agent_message`), so streaming is chunk-level;
+/// older builds also emit `agent_message_delta`, which streams finer.
+private final class CodexStreamParser: @unchecked Sendable {
+    private let lock = NSLock()
+    private var partial = ""
+    private let onPartial: @Sendable (String) -> Void
+
+    init(onPartial: @escaping @Sendable (String) -> Void) {
+        self.onPartial = onPartial
+    }
+
+    func consume(line: String) {
+        guard let data = line.data(using: .utf8),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return
+        }
+
+        var report: String?
+        lock.lock()
+        if let msg = object["msg"] as? [String: Any], let type = msg["type"] as? String {
+            switch type {
+            case "agent_message_delta":
+                if let delta = msg["delta"] as? String {
+                    partial += delta
+                    report = partial
+                }
+            case "agent_message":
+                if let message = msg["message"] as? String {
+                    partial = message
+                    report = partial
+                }
+            default:
+                break
+            }
+        }
+        if (object["type"] as? String) == "item.completed",
+           let item = object["item"] as? [String: Any],
+           let itemType = (item["type"] as? String) ?? (item["item_type"] as? String),
+           itemType == "agent_message" || itemType == "assistant_message",
+           let text = (item["text"] as? String) ?? (item["message"] as? String) {
+            partial = text
+            report = partial
+        }
+        lock.unlock()
+
+        if let report {
+            onPartial(report)
+        }
     }
 }
