@@ -42,6 +42,13 @@ struct MCPSearchHit: Codable, Sendable {
     let deepLink: String?
 }
 
+struct NoteItem: Identifiable, Sendable {
+    let id: String
+    let text: String
+    let page: Int
+    let deepLink: String?
+}
+
 final class ReaderStore: ObservableObject {
     @Published private(set) var document: PDFDocument?
     @Published private(set) var documentURL: URL?
@@ -56,6 +63,7 @@ final class ReaderStore: ObservableObject {
     @Published private(set) var commentThreads: [CommentThread] = []
     @Published var activeCommentThreadID: String?
     @Published var isRegionCommentMode = false
+    @Published private(set) var annotationsRevision = 0
     @Published var errorMessage: String?
 
     weak var pdfView: PDFView?
@@ -169,6 +177,7 @@ final class ReaderStore: ObservableObject {
         commentThreads = commentStore.loadThreads(forDocumentAt: standardizedURL)
         activeCommentThreadID = nil
         isRegionCommentMode = false
+        annotationsRevision &+= 1
         currentPageIndex = clampedPageIndex
         updateCurrentOutlineSelection(for: clampedPageIndex)
         currentViewState = PDFDocumentViewState(
@@ -773,6 +782,38 @@ final class ReaderStore: ObservableObject {
         commentStore.saveThreads(commentThreads, forDocumentAt: documentURL)
     }
 
+    // MARK: - Sidebar data
+
+    func sidebarHighlights() -> [MCPHighlight] {
+        mcpHighlights(limit: nil)
+    }
+
+    func sidebarNotes() -> [NoteItem] {
+        guard let document else { return [] }
+
+        var notes: [NoteItem] = []
+        for pageIndex in 0..<document.pageCount {
+            guard let page = document.page(at: pageIndex) else { continue }
+
+            for annotation in page.annotations where annotation.type == "Text" {
+                let text = annotation.contents?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                notes.append(
+                    NoteItem(
+                        id: highlightID(pageIndex: pageIndex, bounds: annotation.bounds),
+                        text: text,
+                        page: pageIndex + 1,
+                        deepLink: readerLinkURL(forQuote: text, pageIndex: pageIndex)?.absoluteString
+                    )
+                )
+            }
+        }
+        return notes
+    }
+
+    func goToPage(number pageNumber: Int) {
+        goToPage(at: pageNumber - 1)
+    }
+
     private func restoreLastPDF() {
         guard let url = stateStore.loadLastPDFURL() else { return }
         loadPDF(at: url)
@@ -888,6 +929,7 @@ final class ReaderStore: ObservableObject {
     private func scheduleCurrentPDFSave() {
         guard let document, let documentURL else { return }
 
+        annotationsRevision &+= 1
         hasUnsavedPDFChanges = true
         pendingPDFSaveWorkItem?.cancel()
 

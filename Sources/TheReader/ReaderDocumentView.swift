@@ -2,12 +2,12 @@ import SwiftUI
 
 struct ReaderDocumentView: View {
     @EnvironmentObject private var store: ReaderStore
-    @State private var columnVisibility = NavigationSplitViewVisibility.detailOnly
+    @State private var columnVisibility = NavigationSplitViewVisibility.all
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            PDFOutlineSidebar()
-                .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 380)
+            SidebarView()
+                .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 400)
         } detail: {
             HStack(spacing: 0) {
                 PDFPanel()
@@ -108,31 +108,271 @@ struct ReaderDocumentView: View {
     }
 }
 
-private struct PDFOutlineSidebar: View {
+private struct SidebarView: View {
     @EnvironmentObject private var store: ReaderStore
+    @State private var tab: SidebarTab = .contents
+    @State private var query = ""
+
+    enum SidebarTab: String, CaseIterable, Identifiable {
+        case contents, highlights, notes, comments
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .contents: return "Contents"
+            case .highlights: return "Highlights"
+            case .notes: return "Notes"
+            case .comments: return "Comments"
+            }
+        }
+        var symbol: String {
+            switch self {
+            case .contents: return "list.bullet"
+            case .highlights: return "highlighter"
+            case .notes: return "note.text"
+            case .comments: return "text.bubble"
+            }
+        }
+    }
 
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("Section", selection: $tab) {
+                ForEach(SidebarTab.allCases) { item in
+                    Image(systemName: item.symbol).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+
+            searchField
+            Divider()
+            content
+        }
+        .navigationTitle(tab.label)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(.secondary)
+            TextField("Search \(tab.label.lowercased())", text: $query)
+                .textFieldStyle(.plain)
+            if !query.isEmpty {
+                Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(Color.secondary.opacity(0.12), in: Capsule())
+        .padding(8)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if store.document == nil {
+            VStack {
+                SidebarPlaceholder(systemImage: "doc.richtext", title: "No PDF Open", detail: "Open a PDF to get started.")
+                Spacer()
+            }
+        } else {
+            switch tab {
+            case .contents: contentsList
+            case .highlights: highlightsList
+            case .notes: notesList
+            case .comments: commentsList
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var contentsList: some View {
         List {
-            if store.document == nil {
-                SidebarPlaceholder(
-                    systemImage: "doc.richtext",
-                    title: "No PDF Open",
-                    detail: "Open a PDF to see its outline."
-                )
-            } else if store.outlineItems.isEmpty {
-                SidebarPlaceholder(
-                    systemImage: "list.bullet.rectangle",
-                    title: "No Outline",
-                    detail: "This PDF does not include table-of-contents metadata."
-                )
-            } else {
+            if store.outlineItems.isEmpty {
+                SidebarPlaceholder(systemImage: "list.bullet.rectangle", title: "No Outline", detail: "This PDF has no table-of-contents metadata.")
+            } else if query.isEmpty {
                 OutlineGroup(store.outlineItems, children: \.outlineChildren) { item in
+                    PDFOutlineRow(item: item)
+                }
+            } else {
+                ForEach(flattenOutline(store.outlineItems).filter { $0.title.localizedCaseInsensitiveContains(query) }) { item in
                     PDFOutlineRow(item: item)
                 }
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("Contents")
+    }
+
+    @ViewBuilder
+    private var highlightsList: some View {
+        let items = store.sidebarHighlights().filter { query.isEmpty || $0.text.localizedCaseInsensitiveContains(query) }
+        List {
+            if items.isEmpty {
+                emptyRow("No highlights yet")
+            } else {
+                ForEach(items, id: \.id) { highlight in
+                    Button { store.goToPage(number: highlight.page) } label: { HighlightRow(highlight: highlight) }
+                        .buttonStyle(.plain)
+                }
+            }
+        }
+        .listStyle(.sidebar)
+    }
+
+    @ViewBuilder
+    private var notesList: some View {
+        let items = store.sidebarNotes().filter { query.isEmpty || $0.text.localizedCaseInsensitiveContains(query) }
+        List {
+            if items.isEmpty {
+                emptyRow("No notes yet")
+            } else {
+                ForEach(items) { note in
+                    Button { store.goToPage(number: note.page) } label: { NoteRow(note: note) }
+                        .buttonStyle(.plain)
+                }
+            }
+        }
+        .listStyle(.sidebar)
+    }
+
+    @ViewBuilder
+    private var commentsList: some View {
+        let items = store.commentThreads.filter { thread in
+            query.isEmpty
+                || (thread.anchor.quote?.localizedCaseInsensitiveContains(query) ?? false)
+                || thread.messages.contains { $0.body.localizedCaseInsensitiveContains(query) }
+        }
+        List {
+            if items.isEmpty {
+                emptyRow("No comments yet")
+            } else {
+                ForEach(items) { thread in
+                    Button {
+                        store.openComment(id: thread.id)
+                        store.goToPage(number: thread.anchor.page)
+                    } label: {
+                        CommentRow(thread: thread)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .listStyle(.sidebar)
+    }
+
+    private func emptyRow(_ text: String) -> some View {
+        Text(text)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 8)
+    }
+
+    private func flattenOutline(_ items: [PDFOutlineItem]) -> [PDFOutlineItem] {
+        items.flatMap { [$0] + flattenOutline($0.children) }
+    }
+}
+
+private struct HighlightRow: View {
+    let highlight: MCPHighlight
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            RoundedRectangle(cornerRadius: 2).fill(swatch).frame(width: 4)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(highlight.text.isEmpty ? "(highlight)" : highlight.text)
+                    .font(.callout)
+                    .lineLimit(3)
+                Text("p. \(highlight.page)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .padding(.vertical, 2)
+    }
+
+    private var swatch: Color {
+        if let hex = highlight.color, let color = Color(hex: hex) { return color }
+        return .yellow
+    }
+}
+
+private struct NoteRow: View {
+    let note: NoteItem
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "note.text").font(.caption).foregroundStyle(.yellow)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(note.text.isEmpty ? "(empty note)" : note.text)
+                    .font(.callout)
+                    .foregroundStyle(note.text.isEmpty ? .secondary : .primary)
+                    .lineLimit(3)
+                Text("p. \(note.page)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .padding(.vertical, 2)
+    }
+}
+
+private struct CommentRow: View {
+    let thread: CommentThread
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: thread.anchor.kind == .region ? "viewfinder" : "text.bubble")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(preview)
+                    .font(.callout)
+                    .lineLimit(2)
+                HStack(spacing: 6) {
+                    Text("p. \(thread.anchor.page)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if thread.status == .resolved {
+                        Text("Resolved").font(.caption2).foregroundStyle(.green)
+                    } else if thread.messages.last?.author == .agent {
+                        Text("New reply").font(.caption2).foregroundStyle(.blue)
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .padding(.vertical, 2)
+    }
+
+    private var preview: String {
+        if let last = thread.messages.last {
+            return last.body
+        }
+        if let quote = thread.anchor.quote, !quote.isEmpty {
+            return "“\(quote)”"
+        }
+        return thread.anchor.kind == .region ? "Region comment" : "Empty comment"
+    }
+}
+
+private extension Color {
+    init?(hex: String) {
+        var value = hex
+        if value.hasPrefix("#") { value.removeFirst() }
+        guard value.count == 6, let int = Int(value, radix: 16) else { return nil }
+        self.init(
+            red: Double((int >> 16) & 0xFF) / 255,
+            green: Double((int >> 8) & 0xFF) / 255,
+            blue: Double(int & 0xFF) / 255
+        )
     }
 }
 
