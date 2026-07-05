@@ -49,6 +49,12 @@ struct NoteItem: Identifiable, Sendable {
     let deepLink: String?
 }
 
+/// A page + annotation pair, used to make annotation add/remove undoable.
+struct AnnotationPlacement {
+    let page: PDFPage
+    let annotation: PDFAnnotation
+}
+
 final class ReaderStore: ObservableObject {
     @Published private(set) var document: PDFDocument?
     @Published private(set) var documentURL: URL?
@@ -62,6 +68,7 @@ final class ReaderStore: ObservableObject {
     @Published private(set) var selectionHistory: [SelectionEntry] = []
     @Published private(set) var commentThreads: [CommentThread] = []
     @Published var activeCommentThreadID: String?
+    @Published private(set) var unreadCommentThreadIDs: Set<String> = []
     @Published var isRegionCommentMode = false
     @Published private(set) var annotationsRevision = 0
     @Published var errorMessage: String?
@@ -176,6 +183,8 @@ final class ReaderStore: ObservableObject {
         selectionHistory = []
         commentThreads = commentStore.loadThreads(forDocumentAt: standardizedURL)
         activeCommentThreadID = nil
+        unreadCommentThreadIDs = []
+        updateCommentBadge()
         isRegionCommentMode = false
         annotationsRevision &+= 1
         currentPageIndex = clampedPageIndex
@@ -271,10 +280,8 @@ final class ReaderStore: ObservableObject {
             return
         }
 
-        let lineSelections = selection.selectionsByLine()
-        var annotationCount = 0
-
-        for lineSelection in lineSelections {
+        var added: [AnnotationPlacement] = []
+        for lineSelection in selection.selectionsByLine() {
             for page in lineSelection.pages {
                 let bounds = lineSelection.bounds(for: page).insetBy(dx: -1.5, dy: -1.5)
                 guard !bounds.isNull, !bounds.isEmpty else { continue }
@@ -284,14 +291,15 @@ final class ReaderStore: ObservableObject {
                 annotation.userName = NSFullUserName()
                 annotation.modificationDate = Date()
                 page.addAnnotation(annotation)
-                annotationCount += 1
+                added.append(AnnotationPlacement(page: page, annotation: annotation))
             }
         }
 
-        if annotationCount == 0 {
+        if added.isEmpty {
             errorMessage = "The current selection could not be highlighted."
         } else if let pdfView {
             pdfView.setNeedsDisplay(pdfView.bounds)
+            registerUndoForAddedAnnotations(added, actionName: "Highlight")
             scheduleCurrentPDFSave()
         }
     }
@@ -318,7 +326,37 @@ final class ReaderStore: ObservableObject {
 
         pdfView.setNeedsDisplay(pdfView.bounds)
         (pdfView as? StickyNotePresenting)?.openStickyNote(annotation, on: placement.page)
+        registerUndoForAddedAnnotations([AnnotationPlacement(page: placement.page, annotation: annotation)], actionName: "Add Note")
         scheduleCurrentPDFSave()
+    }
+
+    // MARK: - Annotation undo
+
+    private func registerUndoForAddedAnnotations(_ items: [AnnotationPlacement], actionName: String) {
+        guard let undoManager = pdfView?.undoManager else { return }
+        undoManager.setActionName(actionName)
+        undoManager.registerUndo(withTarget: self) { store in
+            store.setAnnotations(items, present: false, actionName: actionName)
+        }
+    }
+
+    private func setAnnotations(_ items: [AnnotationPlacement], present: Bool, actionName: String) {
+        for item in items {
+            if present {
+                item.page.addAnnotation(item.annotation)
+            } else {
+                item.page.removeAnnotation(item.annotation)
+            }
+        }
+        pdfView?.setNeedsDisplay(pdfView?.bounds ?? .zero)
+        scheduleCurrentPDFSave()
+
+        if let undoManager = pdfView?.undoManager {
+            undoManager.setActionName(actionName)
+            undoManager.registerUndo(withTarget: self) { store in
+                store.setAnnotations(items, present: !present, actionName: actionName)
+            }
+        }
     }
 
     func annotationDidChange() {
@@ -507,6 +545,33 @@ final class ReaderStore: ObservableObject {
 
     func mcpPageInfo(forPageNumber pageNumber: Int) -> MCPPageInfo? {
         mcpPageInfo(forPageIndex: pageNumber - 1)
+    }
+
+    /// Page infos for an inclusive 1-based range, capped at 50 pages.
+    func mcpPages(from: Int, to: Int, includeText: Bool) -> [MCPPageInfo] {
+        guard let document else { return [] }
+
+        let lower = max(1, min(from, to))
+        let upper = min(document.pageCount, max(from, to))
+        guard lower <= upper else { return [] }
+        let capped = min(upper, lower + 49)
+
+        var pages: [MCPPageInfo] = []
+        for pageNumber in lower...capped {
+            guard var info = mcpPageInfo(forPageNumber: pageNumber) else { continue }
+            if !includeText {
+                info = MCPPageInfo(
+                    documentTitle: info.documentTitle,
+                    documentPath: info.documentPath,
+                    page: info.page,
+                    pageCount: info.pageCount,
+                    chapter: info.chapter,
+                    text: nil
+                )
+            }
+            pages.append(info)
+        }
+        return pages
     }
 
     private func mcpPageInfo(forPageIndex requestedIndex: Int) -> MCPPageInfo? {
@@ -703,6 +768,15 @@ final class ReaderStore: ObservableObject {
         )
         commentThreads[index].updatedAt = Date()
         persistComments()
+
+        if author == .agent, id != activeCommentThreadID {
+            unreadCommentThreadIDs.insert(id)
+            updateCommentBadge()
+            if !NSApplication.shared.isActive {
+                NSApplication.shared.requestUserAttention(.informationalRequest)
+            }
+        }
+
         return commentThreads[index]
     }
 
@@ -720,8 +794,20 @@ final class ReaderStore: ObservableObject {
         commentThreads.first { $0.id == activeCommentThreadID }
     }
 
-    func openComment(id: String) { activeCommentThreadID = id }
+    func openComment(id: String) {
+        activeCommentThreadID = id
+        if unreadCommentThreadIDs.remove(id) != nil {
+            updateCommentBadge()
+        }
+    }
+
     func closeActiveComment() { activeCommentThreadID = nil }
+
+    private func updateCommentBadge() {
+        NSApplication.shared.dockTile.badgeLabel = unreadCommentThreadIDs.isEmpty
+            ? nil
+            : String(unreadCommentThreadIDs.count)
+    }
 
     /// Creates a comment anchored to the current text selection and opens its thread.
     @discardableResult

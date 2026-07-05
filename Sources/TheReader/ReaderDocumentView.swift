@@ -136,15 +136,10 @@ private struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Section", selection: $tab) {
-                ForEach(SidebarTab.allCases) { item in
-                    Image(systemName: item.symbol).tag(item)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 8)
-            .padding(.top, 8)
+            GlassTabSwitcher(selection: $tab)
+                .padding(.horizontal, 8)
+                .padding(.top, 10)
+                .padding(.bottom, 2)
 
             searchField
             Divider()
@@ -253,7 +248,7 @@ private struct SidebarView: View {
                         store.openComment(id: thread.id)
                         store.goToPage(number: thread.anchor.page)
                     } label: {
-                        CommentRow(thread: thread)
+                        CommentRow(thread: thread, unread: store.unreadCommentThreadIDs.contains(thread.id))
                     }
                     .buttonStyle(.plain)
                 }
@@ -272,6 +267,40 @@ private struct SidebarView: View {
 
     private func flattenOutline(_ items: [PDFOutlineItem]) -> [PDFOutlineItem] {
         items.flatMap { [$0] + flattenOutline($0.children) }
+    }
+}
+
+private struct GlassTabSwitcher: View {
+    @Binding var selection: SidebarView.SidebarTab
+    @Namespace private var namespace
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(SidebarView.SidebarTab.allCases) { tab in
+                Button {
+                    withAnimation(.easeOut(duration: 0.16)) { selection = tab }
+                } label: {
+                    Image(systemName: tab.symbol)
+                        .font(.system(size: 15, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 30)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(selection == tab ? Color.primary : Color.secondary)
+                .background {
+                    if selection == tab {
+                        Capsule(style: .continuous)
+                            .fill(.background)
+                            .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
+                            .matchedGeometryEffect(id: "selectedTab", in: namespace)
+                    }
+                }
+                .help(tab.label)
+            }
+        }
+        .padding(4)
+        .glassTrack()
     }
 }
 
@@ -325,6 +354,7 @@ private struct NoteRow: View {
 
 private struct CommentRow: View {
     let thread: CommentThread
+    let unread: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -341,7 +371,7 @@ private struct CommentRow: View {
                         .foregroundStyle(.secondary)
                     if thread.status == .resolved {
                         Text("Resolved").font(.caption2).foregroundStyle(.green)
-                    } else if thread.messages.last?.author == .agent {
+                    } else if unread {
                         Text("New reply").font(.caption2).foregroundStyle(.blue)
                     }
                 }
@@ -360,6 +390,19 @@ private struct CommentRow: View {
             return "“\(quote)”"
         }
         return thread.anchor.kind == .region ? "Region comment" : "Empty comment"
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func glassTrack() -> some View {
+        let shape = Capsule(style: .continuous)
+        if #available(macOS 26.0, *) {
+            glassEffect(.regular, in: shape)
+        } else {
+            background(.regularMaterial, in: shape)
+                .overlay(shape.strokeBorder(.separator.opacity(0.5)))
+        }
     }
 }
 

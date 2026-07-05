@@ -19,6 +19,9 @@ final class ReaderMCPBridge {
 
     func pageInfo() -> MCPPageInfo? { store?.mcpPageInfo() }
     func pageInfo(number: Int) -> MCPPageInfo? { store?.mcpPageInfo(forPageNumber: number) }
+    func pages(from: Int, to: Int, includeText: Bool) -> [MCPPageInfo] {
+        store?.mcpPages(from: from, to: to, includeText: includeText) ?? []
+    }
     func highlights(limit: Int?) -> [MCPHighlight] { store?.mcpHighlights(limit: limit) ?? [] }
     func recentSelections(limit: Int) -> [SelectionEntry] { store?.mcpRecentSelections(limit: limit) ?? [] }
     func currentOrLatestSelection() -> SelectionEntry? { store?.mcpCurrentOrLatestSelection() }
@@ -63,6 +66,7 @@ final class MCPService: @unchecked Sendable {
     private static let toolNames = [
         "get_current_page",
         "get_page",
+        "get_pages",
         "get_selection",
         "list_recent_selections",
         "list_highlights",
@@ -217,6 +221,17 @@ final class MCPService: @unchecked Sendable {
             }
             return text(json(info))
 
+        case "get_pages":
+            guard let from = args["from"]?.intValue, let to = args["to"]?.intValue else {
+                return text("Missing required arguments: from, to", isError: true)
+            }
+            let includeText = args["includeText"]?.boolValue ?? true
+            let pages = await bridge.pages(from: from, to: to, includeText: includeText)
+            if pages.isEmpty {
+                return text("No PDF is open, or the page range is invalid.", isError: true)
+            }
+            return text(json(pages))
+
         case "get_selection":
             let selection = await bridge.currentOrLatestSelection()
             return text(selection.map(json) ?? "null")
@@ -351,6 +366,18 @@ final class MCPService: @unchecked Sendable {
                         "includeText": prop("boolean", "Include the extracted page text. Defaults to true."),
                     ],
                     required: ["page"]
+                )
+            ),
+            Tool(
+                name: "get_pages",
+                description: "Text and metadata for an inclusive 1-based page range in one call — use to read a whole chapter/section without many calls. Capped at 50 pages.",
+                inputSchema: objectSchema(
+                    properties: [
+                        "from": prop("number", "First 1-based page in the range."),
+                        "to": prop("number", "Last 1-based page in the range (inclusive)."),
+                        "includeText": prop("boolean", "Include the extracted page text. Defaults to true."),
+                    ],
+                    required: ["from", "to"]
                 )
             ),
             Tool(

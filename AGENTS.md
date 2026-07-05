@@ -23,6 +23,7 @@ Useful MCP tools:
 
 - `get_current_page`
 - `get_page`
+- `get_pages`
 - `get_selection`
 - `list_recent_selections`
 - `list_highlights`

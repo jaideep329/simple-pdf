@@ -38,6 +38,7 @@ struct PDFReaderView: NSViewRepresentable {
         pdfView.store = store
 
         context.coordinator.install(store.document, in: pdfView)
+        pdfView.refreshCommentMarkers()
     }
 
     static func dismantleNSView(_ nsView: PDFContainerView, coordinator: Coordinator) {
@@ -134,6 +135,7 @@ struct PDFReaderView: NSViewRepresentable {
                     self.store?.applyPendingReaderLinkTarget(in: pdfView)
                     self.store?.finishRestoringPDFView(from: pdfView)
                     self.store?.updateZoomText(from: pdfView)
+                    pdfView.refreshCommentMarkers()
                 }
             }
         }
@@ -229,6 +231,7 @@ struct PDFReaderView: NSViewRepresentable {
             store?.updateZoomText(from: pdfView)
             pdfView.layoutStickyNoteEditor()
             pdfView.layoutSelectionPopover()
+            pdfView.layoutCommentMarkers()
         }
 
         @objc private func pageChanged(_ notification: Notification) {
@@ -236,6 +239,7 @@ struct PDFReaderView: NSViewRepresentable {
             store?.updateCurrentPage(from: pdfView)
             pdfView.layoutStickyNoteEditor()
             pdfView.layoutSelectionPopover()
+            pdfView.layoutCommentMarkers()
         }
 
         @objc private func scrollBoundsChanged(_ notification: Notification) {
@@ -243,6 +247,7 @@ struct PDFReaderView: NSViewRepresentable {
             store?.updateCurrentPage(from: observedPDFView)
             observedPDFView.layoutStickyNoteEditor()
             observedPDFView.layoutSelectionPopover()
+            observedPDFView.layoutCommentMarkers()
         }
     }
 }
@@ -302,6 +307,7 @@ final class ReaderPDFView: PDFView, StickyNotePresenting {
     private var pendingPopoverShow: DispatchWorkItem?
     private var regionStart: CGPoint?
     private var regionMarquee: NSView?
+    private var commentMarkers: [String: CommentMarkerView] = [:]
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
@@ -570,6 +576,51 @@ final class ReaderPDFView: PDFView, StickyNotePresenting {
         cacheDisplay(in: viewRect, to: rep)
         guard let data = rep.representation(using: .png, properties: [:]) else { return nil }
         return data.base64EncodedString()
+    }
+
+    // MARK: - Comment markers
+
+    func refreshCommentMarkers() {
+        guard let store, document != nil else {
+            commentMarkers.values.forEach { $0.removeFromSuperview() }
+            commentMarkers.removeAll()
+            return
+        }
+
+        let ids = Set(store.commentThreads.map { $0.id })
+        for (id, view) in commentMarkers where !ids.contains(id) {
+            view.removeFromSuperview()
+            commentMarkers[id] = nil
+        }
+        for thread in store.commentThreads where commentMarkers[thread.id] == nil {
+            let marker = CommentMarkerView(threadID: thread.id, store: store)
+            addSubview(marker)
+            commentMarkers[thread.id] = marker
+        }
+        layoutCommentMarkers()
+    }
+
+    func layoutCommentMarkers() {
+        guard let store, let document, !commentMarkers.isEmpty else { return }
+
+        let threadsByID = Dictionary(store.commentThreads.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let size: CGFloat = 22
+        for (id, marker) in commentMarkers {
+            guard
+                let thread = threadsByID[id],
+                let bounds = thread.anchor.bounds,
+                let page = document.page(at: thread.anchor.page - 1)
+            else {
+                marker.isHidden = true
+                continue
+            }
+
+            let pageRect = CGRect(x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height)
+            let viewRect = convert(pageRect, from: page)
+            marker.applyTint(resolved: thread.status == .resolved)
+            marker.frame = NSRect(x: viewRect.minX - size - 4, y: viewRect.maxY - size, width: size, height: size)
+            marker.isHidden = false
+        }
     }
 
     private func showSelectionPopover() {
@@ -900,6 +951,52 @@ final class SelectionPopoverView: NSView {
 
     required init?(coder: NSCoder) {
         nil
+    }
+}
+
+final class CommentMarkerView: NSView {
+    let threadID: String
+    private weak var store: ReaderStore?
+
+    init(threadID: String, store: ReaderStore?) {
+        self.threadID = threadID
+        self.store = store
+        super.init(frame: NSRect(x: 0, y: 0, width: 22, height: 22))
+
+        wantsLayer = true
+        layer?.cornerRadius = 11
+        shadow = {
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.3)
+            shadow.shadowOffset = NSSize(width: 0, height: -1)
+            shadow.shadowBlurRadius = 3
+            return shadow
+        }()
+
+        let imageView = NSImageView(
+            image: NSImage(systemSymbolName: "text.bubble.fill", accessibilityDescription: "Comment") ?? NSImage()
+        )
+        imageView.contentTintColor = .white
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        imageView.frame = NSRect(x: 4, y: 4, width: 14, height: 14)
+        addSubview(imageView)
+
+        applyTint(resolved: false)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func applyTint(resolved: Bool) {
+        layer?.backgroundColor = (resolved ? NSColor.systemGreen : NSColor.controlAccentColor).cgColor
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        store?.openComment(id: threadID)
     }
 }
 
