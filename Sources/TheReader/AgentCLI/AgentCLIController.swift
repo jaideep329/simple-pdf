@@ -16,6 +16,10 @@ final class AgentCLIController: ObservableObject {
     /// threadID → in-progress answer text, streamed while a run is active and
     /// rendered as a live draft bubble; cleared when the run ends.
     @Published private(set) var partialAnswers: [String: String] = [:]
+    /// threadID → tool names invoked so far in the active run (MCP included),
+    /// shown live in the draft bubble; cleared when the run ends. The persisted
+    /// per-message list comes from the engine's own count, not this log.
+    @Published private(set) var liveToolCalls: [String: [String]] = [:]
 
     weak var store: ReaderStore?
 
@@ -37,6 +41,10 @@ final class AgentCLIController: ObservableObject {
 
     func partialAnswer(forThread threadID: String) -> String? {
         partialAnswers[threadID]
+    }
+
+    func toolCalls(forThread threadID: String) -> [String] {
+        liveToolCalls[threadID] ?? []
     }
 
     func clearError(forThread threadID: String) {
@@ -131,6 +139,12 @@ final class AgentCLIController: ObservableObject {
                 self.partialAnswers[threadID] = text
             }
         }
+        let onToolCall: @Sendable (String) -> Void = { [weak self] name in
+            DispatchQueue.main.async {
+                guard let self, self.activeRuns[threadID] != nil else { return }
+                self.liveToolCalls[threadID, default: []].append(name)
+            }
+        }
 
         tasks[threadID] = Task.detached { [weak self] in
             let engine = engineKind.makeEngine()
@@ -145,7 +159,8 @@ final class AgentCLIController: ObservableObject {
                             sessionID: sessionID,
                             workingDirectory: workingDirectory,
                             timeout: timeout,
-                            onPartial: onPartial
+                            onPartial: onPartial,
+                            onToolCall: onToolCall
                         )
                     } catch is CancellationError {
                         throw CancellationError()
@@ -160,7 +175,8 @@ final class AgentCLIController: ObservableObject {
                             sessionID: nil,
                             workingDirectory: workingDirectory,
                             timeout: timeout,
-                            onPartial: onPartial
+                            onPartial: onPartial,
+                            onToolCall: onToolCall
                         )
                     }
                 } else {
@@ -169,7 +185,8 @@ final class AgentCLIController: ObservableObject {
                         sessionID: nil,
                         workingDirectory: workingDirectory,
                         timeout: timeout,
-                        onPartial: onPartial
+                        onPartial: onPartial,
+                        onToolCall: onToolCall
                     )
                 }
 
@@ -204,7 +221,13 @@ final class AgentCLIController: ObservableObject {
         if text.isEmpty {
             errors[threadID] = "\(engine.displayName) returned an empty answer."
         } else {
-            store.replyToComment(id: threadID, body: text, author: .agent, agentName: engine.displayName)
+            store.replyToComment(
+                id: threadID,
+                body: text,
+                author: .agent,
+                agentName: engine.displayName,
+                toolCalls: answer.toolCalls.isEmpty ? nil : answer.toolCalls
+            )
         }
 
         if let sessionID = answer.sessionID {
@@ -234,6 +257,7 @@ final class AgentCLIController: ObservableObject {
         activeRuns[threadID] = nil
         tasks[threadID] = nil
         partialAnswers[threadID] = nil
+        liveToolCalls[threadID] = nil
     }
 
     // MARK: - Prompt assembly

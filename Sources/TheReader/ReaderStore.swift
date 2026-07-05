@@ -768,14 +768,27 @@ final class ReaderStore: ObservableObject {
     }
 
     @discardableResult
-    func replyToComment(id: String, body: String, author: CommentAuthor, agentName: String? = nil) -> CommentThread? {
+    func replyToComment(
+        id: String,
+        body: String,
+        author: CommentAuthor,
+        agentName: String? = nil,
+        toolCalls: [String]? = nil
+    ) -> CommentThread? {
         guard let index = commentThreads.firstIndex(where: { $0.id == id }) else { return nil }
 
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return commentThreads[index] }
 
         commentThreads[index].messages.append(
-            CommentMessage(id: UUID().uuidString, author: author, agentName: agentName, body: trimmed, createdAt: Date())
+            CommentMessage(
+                id: UUID().uuidString,
+                author: author,
+                agentName: agentName,
+                body: trimmed,
+                createdAt: Date(),
+                toolCalls: toolCalls
+            )
         )
         commentThreads[index].updatedAt = Date()
         persistComments()

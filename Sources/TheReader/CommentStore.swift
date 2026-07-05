@@ -39,6 +39,10 @@ struct CommentMessage: Codable, Sendable, Identifiable, Equatable {
     var agentName: String?
     var body: String
     var createdAt: Date
+    /// Experimental agent-CLI feature: names of the tools the agent invoked to
+    /// produce this message (MCP tools included), in call order — shown as a
+    /// brief under the bubble. Optional so pre-existing sidecar files decode.
+    var toolCalls: [String]? = nil
 }
 
 struct CommentThread: Codable, Sendable, Identifiable, Equatable {

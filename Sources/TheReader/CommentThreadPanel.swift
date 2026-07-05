@@ -160,6 +160,14 @@ struct CommentThreadPanel: View {
                         isHuman ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.12),
                         in: RoundedRectangle(cornerRadius: 10)
                     )
+
+                if !isHuman, let toolCalls = message.toolCalls, !toolCalls.isEmpty {
+                    Label(AgentToolCallBrief.format(toolCalls), systemImage: "wrench.and.screwdriver")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                        .help("Tools \(message.agentName ?? "the agent") used for this answer")
+                }
             }
             if !isHuman { Spacer(minLength: 28) }
         }

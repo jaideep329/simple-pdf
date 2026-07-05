@@ -85,7 +85,10 @@ does not embed an LLM.
     --skip-git-repo-check -c 'sandbox_mode="read-only"'`; `CodexStreamParser`
     streams per-event — `agent_message[_delta]` / `item.completed`; final
     parse tolerates old `msg.*` and new `thread.started`/`item.completed`
-    shapes; session id best-effort).
+    shapes; session id best-effort). Both parsers also collect **tool-call
+    names** (Claude: `tool_use` blocks in completed assistant events, MCP as
+    `mcp__server__tool`; Codex: shell / web search / `server: tool`,
+    normalized) → `AgentAnswer.toolCalls`, streamed live via `onToolCall`.
   - `AgentCLIController.swift` — ObservableObject owned by `ReaderStore` (only
     when flag on): builds prompts (thread transcript + anchor page ±1 text via
     `mcpPages` + PDF path + MCP-first guidance; region PNG written to the
@@ -114,8 +117,11 @@ does not embed an LLM.
     strings rendered via `NSImage` template images (the bundle script copies
     only the bare binary, so `Bundle.module` resources can't be used).
   - Data model: `CommentThread.agentSessions: [String: String]?` (engine →
-    session id) and `CommentThread.autoAnswerEngine: String?` (sticky engine);
-    both decode-optional so old sidecar files load.
+    session id), `CommentThread.autoAnswerEngine: String?` (sticky engine),
+    and `CommentMessage.toolCalls: [String]?` (names of tools used to produce
+    an agent answer — rendered via `AgentToolCallBrief` as e.g.
+    "Read ×2 · simple-pdf: get_page" under the message bubble and live in the
+    draft bubble); all decode-optional so old sidecar files load.
 - Comment threads can be **deleted permanently** (trash button + confirmation
   in `CommentThreadPanel`; `ReaderStore.deleteComment` also cancels any
   in-flight agent run) in addition to resolve/reopen.

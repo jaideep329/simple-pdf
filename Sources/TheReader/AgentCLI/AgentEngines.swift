@@ -5,7 +5,8 @@ import Foundation
 /// resuming (when the CLI exposes one). Passing `sessionID` resumes that
 /// conversation; callers handle fallback-to-replay when a resume fails.
 /// `onPartial` is invoked on a background queue with the accumulated in-progress
-/// answer text as it streams (token-level for Claude, per-event for Codex).
+/// answer text as it streams (token-level for Claude, per-event for Codex);
+/// `onToolCall` with each tool name (MCP included) the moment the agent uses it.
 protocol AgentEngine {
     var kind: AgentEngineKind { get }
     func answer(
@@ -13,7 +14,8 @@ protocol AgentEngine {
         sessionID: String?,
         workingDirectory: URL,
         timeout: TimeInterval,
-        onPartial: @escaping @Sendable (String) -> Void
+        onPartial: @escaping @Sendable (String) -> Void,
+        onToolCall: @escaping @Sendable (String) -> Void
     ) async throws -> AgentAnswer
 }
 
@@ -39,7 +41,8 @@ struct ClaudeCodeEngine: AgentEngine {
         sessionID: String?,
         workingDirectory: URL,
         timeout: TimeInterval,
-        onPartial: @escaping @Sendable (String) -> Void
+        onPartial: @escaping @Sendable (String) -> Void,
+        onToolCall: @escaping @Sendable (String) -> Void
     ) async throws -> AgentAnswer {
         guard let executable = AgentCLIProcess.resolveExecutable(named: kind.executableName) else {
             throw AgentCLIError.notInstalled(kind)
@@ -73,7 +76,7 @@ struct ClaudeCodeEngine: AgentEngine {
             arguments += ["--resume", sessionID]
         }
 
-        let parser = ClaudeStreamParser(onPartial: onPartial)
+        let parser = ClaudeStreamParser(onPartial: onPartial, onToolCall: onToolCall)
         let result = try await AgentCLIProcess.run(
             executablePath: executable,
             arguments: arguments,
@@ -99,7 +102,7 @@ struct ClaudeCodeEngine: AgentEngine {
             if let text, !text.isEmpty {
                 // A resumed conversation gets a fresh session id each run, so
                 // always hand back the id from this response.
-                return AgentAnswer(text: text, sessionID: newSessionID)
+                return AgentAnswer(text: text, sessionID: newSessionID, toolCalls: parser.toolCalls)
             }
         }
 
@@ -143,16 +146,23 @@ struct ClaudeCodeEngine: AgentEngine {
 
 /// Incremental parser for Claude's `stream-json` output: accumulates
 /// `content_block_delta` text into the in-progress answer (reset at each
-/// `message_start`, so intermediate tool-use turns don't stick around) and
-/// captures the final `result` event.
+/// `message_start`, so intermediate tool-use turns don't stick around),
+/// collects `tool_use` names from completed assistant messages, and captures
+/// the final `result` event.
 private final class ClaudeStreamParser: @unchecked Sendable {
     private let lock = NSLock()
     private var partial = ""
     private var result: [String: Any]?
+    private var calls: [String] = []
     private let onPartial: @Sendable (String) -> Void
+    private let onToolCall: @Sendable (String) -> Void
 
-    init(onPartial: @escaping @Sendable (String) -> Void) {
+    init(
+        onPartial: @escaping @Sendable (String) -> Void,
+        onToolCall: @escaping @Sendable (String) -> Void
+    ) {
         self.onPartial = onPartial
+        self.onToolCall = onToolCall
     }
 
     func consume(line: String) {
@@ -162,6 +172,7 @@ private final class ClaudeStreamParser: @unchecked Sendable {
         }
 
         var report: String?
+        var reportedCalls: [String] = []
         lock.lock()
         switch object["type"] as? String {
         case "stream_event":
@@ -180,6 +191,19 @@ private final class ClaudeStreamParser: @unchecked Sendable {
                     break
                 }
             }
+        case "assistant":
+            // Completed assistant message: its tool_use blocks are the calls
+            // about to execute. (Not taken from stream events to avoid
+            // double-counting.)
+            if let message = object["message"] as? [String: Any],
+               let content = message["content"] as? [[String: Any]] {
+                for block in content where (block["type"] as? String) == "tool_use" {
+                    if let name = block["name"] as? String {
+                        calls.append(name)
+                        reportedCalls.append(name)
+                    }
+                }
+            }
         case "result":
             result = object
         default:
@@ -190,12 +214,21 @@ private final class ClaudeStreamParser: @unchecked Sendable {
         if let report {
             onPartial(report)
         }
+        for name in reportedCalls {
+            onToolCall(name)
+        }
     }
 
     var resultObject: [String: Any]? {
         lock.lock()
         defer { lock.unlock() }
         return result
+    }
+
+    var toolCalls: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
     }
 }
 
@@ -214,7 +247,8 @@ struct CodexEngine: AgentEngine {
         sessionID: String?,
         workingDirectory: URL,
         timeout: TimeInterval,
-        onPartial: @escaping @Sendable (String) -> Void
+        onPartial: @escaping @Sendable (String) -> Void,
+        onToolCall: @escaping @Sendable (String) -> Void
     ) async throws -> AgentAnswer {
         guard let executable = AgentCLIProcess.resolveExecutable(named: kind.executableName) else {
             throw AgentCLIError.notInstalled(kind)
@@ -231,7 +265,7 @@ struct CodexEngine: AgentEngine {
             prompt
         ]
 
-        let streamer = CodexStreamParser(onPartial: onPartial)
+        let streamer = CodexStreamParser(onPartial: onPartial, onToolCall: onToolCall)
         let result = try await AgentCLIProcess.run(
             executablePath: executable,
             arguments: arguments,
@@ -245,7 +279,7 @@ struct CodexEngine: AgentEngine {
 
         let parsed = Self.parseEventStream(result.stdout)
         if let message = parsed.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
-            return AgentAnswer(text: message, sessionID: parsed.sessionID ?? sessionID)
+            return AgentAnswer(text: message, sessionID: parsed.sessionID ?? sessionID, toolCalls: streamer.toolCalls)
         }
 
         guard result.exitCode == 0 else {
@@ -309,14 +343,22 @@ struct CodexEngine: AgentEngine {
 
 /// Incremental parser for Codex's `--json` stream. Codex mostly emits whole
 /// items (`item.completed` / `agent_message`), so streaming is chunk-level;
-/// older builds also emit `agent_message_delta`, which streams finer.
+/// older builds also emit `agent_message_delta`, which streams finer. Tool
+/// use (shell commands, MCP calls, web searches) is captured as normalized
+/// names from both event generations.
 private final class CodexStreamParser: @unchecked Sendable {
     private let lock = NSLock()
     private var partial = ""
+    private var calls: [String] = []
     private let onPartial: @Sendable (String) -> Void
+    private let onToolCall: @Sendable (String) -> Void
 
-    init(onPartial: @escaping @Sendable (String) -> Void) {
+    init(
+        onPartial: @escaping @Sendable (String) -> Void,
+        onToolCall: @escaping @Sendable (String) -> Void
+    ) {
         self.onPartial = onPartial
+        self.onToolCall = onToolCall
     }
 
     func consume(line: String) {
@@ -326,6 +368,7 @@ private final class CodexStreamParser: @unchecked Sendable {
         }
 
         var report: String?
+        var reportedCall: String?
         lock.lock()
         if let msg = object["msg"] as? [String: Any], let type = msg["type"] as? String {
             switch type {
@@ -339,22 +382,58 @@ private final class CodexStreamParser: @unchecked Sendable {
                     partial = message
                     report = partial
                 }
+            case "exec_command_begin":
+                reportedCall = "shell"
+            case "web_search_begin":
+                reportedCall = "web search"
+            case "mcp_tool_call_begin":
+                let invocation = msg["invocation"] as? [String: Any]
+                let server = (invocation?["server"] as? String) ?? "mcp"
+                let tool = (invocation?["tool"] as? String) ?? "tool"
+                reportedCall = "\(server): \(tool)"
             default:
                 break
             }
         }
         if (object["type"] as? String) == "item.completed",
            let item = object["item"] as? [String: Any],
-           let itemType = (item["type"] as? String) ?? (item["item_type"] as? String),
-           itemType == "agent_message" || itemType == "assistant_message",
-           let text = (item["text"] as? String) ?? (item["message"] as? String) {
-            partial = text
-            report = partial
+           let itemType = (item["type"] as? String) ?? (item["item_type"] as? String) {
+            switch itemType {
+            case "agent_message", "assistant_message":
+                if let text = (item["text"] as? String) ?? (item["message"] as? String) {
+                    partial = text
+                    report = partial
+                }
+            case "command_execution":
+                reportedCall = "shell"
+            case "web_search":
+                reportedCall = "web search"
+            case "mcp_tool_call":
+                let server = (item["server"] as? String) ?? "mcp"
+                let tool = (item["tool"] as? String) ?? "tool"
+                reportedCall = "\(server): \(tool)"
+            case "file_read":
+                reportedCall = "read file"
+            default:
+                break
+            }
+        }
+        if let reportedCall {
+            calls.append(reportedCall)
         }
         lock.unlock()
 
         if let report {
             onPartial(report)
         }
+        if let reportedCall {
+            onToolCall(reportedCall)
+        }
+    }
+
+    var toolCalls: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
     }
 }

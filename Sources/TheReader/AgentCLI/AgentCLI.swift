@@ -43,9 +43,39 @@ enum AgentEngineKind: String, CaseIterable, Identifiable, Sendable {
 
 /// Final result of one engine run. `sessionID` is best-effort (Codex may not
 /// expose one non-interactively); when absent the next turn replays the thread.
+/// `toolCalls` lists the names of the tools the run invoked, in call order
+/// (MCP tools as `mcp__<server>__<tool>`; Codex shell/MCP calls normalized).
 struct AgentAnswer: Sendable {
     let text: String
     let sessionID: String?
+    let toolCalls: [String]
+}
+
+/// Renders a tool-call list as a compact one-line brief for the UI:
+/// consecutive-order aggregation with counts, MCP names prettified —
+/// ["Read", "Read", "mcp__simple-pdf__get_page"] → "Read ×2 · simple-pdf: get_page".
+enum AgentToolCallBrief {
+    static func format(_ calls: [String]) -> String {
+        var counts: [(name: String, count: Int)] = []
+        for call in calls.map(prettify) {
+            if let index = counts.firstIndex(where: { $0.name == call }) {
+                counts[index].count += 1
+            } else {
+                counts.append((call, 1))
+            }
+        }
+        return counts
+            .map { $0.count > 1 ? "\($0.name) ×\($0.count)" : $0.name }
+            .joined(separator: " · ")
+    }
+
+    /// "mcp__<server>__<tool>" → "<server>: <tool>"; anything else unchanged.
+    private static func prettify(_ name: String) -> String {
+        guard name.hasPrefix("mcp__") else { return name }
+        let components = name.components(separatedBy: "__").filter { !$0.isEmpty }
+        guard components.count >= 3 else { return name }
+        return "\(components[1]): \(components.dropFirst(2).joined(separator: "__"))"
+    }
 }
 
 /// The reader's own MCP server, as seen by the spawned agents: they should

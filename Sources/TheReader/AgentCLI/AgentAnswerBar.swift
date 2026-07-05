@@ -142,6 +142,7 @@ struct AgentStreamingBubble: View {
     var body: some View {
         if let engine = controller.runningEngine(forThread: thread.id) {
             let partial = controller.partialAnswer(forThread: thread.id)
+            let toolCalls = controller.toolCalls(forThread: thread.id)
 
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -153,6 +154,13 @@ struct AgentStreamingBubble: View {
                             .foregroundStyle(.secondary)
                         ProgressView()
                             .controlSize(.mini)
+                    }
+
+                    if !toolCalls.isEmpty {
+                        Label(AgentToolCallBrief.format(toolCalls), systemImage: "wrench.and.screwdriver")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(2)
                     }
 
                     Group {
