@@ -112,6 +112,7 @@ private struct SidebarView: View {
     @EnvironmentObject private var store: ReaderStore
     @State private var tab: SidebarTab = .contents
     @State private var query = ""
+    @State private var bookHits: [MCPSearchHit] = []
 
     enum SidebarTab: String, CaseIterable, Identifiable {
         case contents, highlights, notes, comments
@@ -151,7 +152,7 @@ private struct SidebarView: View {
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(.secondary)
-            TextField("Search \(tab.label.lowercased())", text: $query)
+            TextField(tab == .contents ? "Search book text & chapters" : "Search \(tab.label.lowercased())", text: $query)
                 .textFieldStyle(.plain)
             if !query.isEmpty {
                 Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
@@ -185,19 +186,59 @@ private struct SidebarView: View {
     @ViewBuilder
     private var contentsList: some View {
         List {
-            if store.outlineItems.isEmpty {
-                SidebarPlaceholder(systemImage: "list.bullet.rectangle", title: "No Outline", detail: "This PDF has no table-of-contents metadata.")
-            } else if query.isEmpty {
-                OutlineGroup(store.outlineItems, children: \.outlineChildren) { item in
-                    PDFOutlineRow(item: item)
+            if query.isEmpty {
+                if store.outlineItems.isEmpty {
+                    SidebarPlaceholder(systemImage: "list.bullet.rectangle", title: "No Outline", detail: "This PDF has no table-of-contents metadata.")
+                } else {
+                    OutlineGroup(store.outlineItems, children: \.outlineChildren) { item in
+                        PDFOutlineRow(item: item)
+                    }
                 }
             } else {
-                ForEach(flattenOutline(store.outlineItems).filter { $0.title.localizedCaseInsensitiveContains(query) }) { item in
-                    PDFOutlineRow(item: item)
+                let chapterMatches = flattenOutline(store.outlineItems).filter { $0.title.localizedCaseInsensitiveContains(query) }
+                if !chapterMatches.isEmpty {
+                    Section("Chapters") {
+                        ForEach(chapterMatches) { item in
+                            PDFOutlineRow(item: item)
+                        }
+                    }
+                }
+
+                Section("In the book") {
+                    if bookHits.isEmpty {
+                        emptyRow("No matches in the book text")
+                    } else {
+                        ForEach(Array(bookHits.enumerated()), id: \.offset) { _, hit in
+                            Button { store.goToPage(number: hit.page) } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(hit.snippet)
+                                        .font(.caption)
+                                        .lineLimit(3)
+                                    Text("p. \(hit.page)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
             }
         }
         .listStyle(.sidebar)
+        // Debounced full-text search of the PDF (same engine as the MCP
+        // `search` tool); the outline filter above stays instant.
+        .task(id: query) {
+            guard !query.isEmpty else {
+                bookHits = []
+                return
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            bookHits = store.mcpSearch(query: query, limit: 50)
+        }
     }
 
     @ViewBuilder

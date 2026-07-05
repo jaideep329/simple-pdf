@@ -65,7 +65,7 @@ does not embed an LLM.
   composer, resolve/close.
 - **`MCPService.swift`** — in-process MCP server + `ReaderMCPBridge`
   (`@MainActor`) + the `Network.framework` loopback HTTP listener.
-- **`AgentCLI/`** (branch `experimental/agent-cli`) — isolated "answer a comment
+- **`AgentCLI/`** — isolated "answer a comment
   thread with a local CLI agent" module, all gated behind
   `AgentCLIFeature.isEnabled` (in `AgentCLI.swift`):
   - `AgentCLI.swift` — feature flag, `AgentEngineKind` (claude-code | codex;
@@ -154,11 +154,13 @@ does not embed an LLM.
 - Started from `ReaderStore.init`. Writes discovery files (`mcp-endpoint.json`,
   `mcp-discovery.json`, `mcp-codex.toml`) under several App Support dirs.
 - Configured in `~/.codex/config.toml` as `[mcp_servers.simple-pdf]`.
-- **14 tools**: `get_current_page`, `get_page`, `get_pages`, `get_selection`,
-  `list_recent_selections`, `list_highlights`, `open_at_page`, `search`,
-  `list_comments`, `get_comment` (returns thread + anchored page text; region
-  anchors also return a PNG **image block**), `add_comment`, `reply_to_comment`,
-  `resolve_comment`, `reopen_comment`. `list_comments` strips the base64 image.
+- **15 tools**: `get_current_page`, `get_page`, `get_pages`, `get_selection`,
+  `list_recent_selections`, `list_highlights`, `list_notes` (sticky notes —
+  added so all three annotation kinds are agent-visible), `open_at_page`,
+  `search`, `list_comments`, `get_comment` (returns thread + anchored page
+  text; region anchors also return a PNG **image block**), `add_comment`,
+  `reply_to_comment`, `resolve_comment`, `reopen_comment`. `list_comments`
+  strips the base64 image.
 
 ## Features shipped
 
@@ -171,7 +173,24 @@ does not embed an LLM.
   Ongoing you↔agent threads in a trailing panel; agent answers via MCP appear
   live. On-page markers (green when resolved) jump to a thread.
 - **Tabbed sidebar** (Contents / Highlights / Notes / Comments) + search;
-  Liquid Glass segmented switcher with a sliding selected pill.
+  Liquid Glass segmented switcher with a sliding selected pill. The search
+  field filters the active tab's list; on **Contents** it additionally runs a
+  debounced **full-text search of the book** (same `mcpSearch` engine as the
+  MCP `search` tool) shown as an "In the book" section — rows jump to the page
+  (they do not select/highlight the match on arrival yet).
+- **Answer with a local CLI agent** (experimental, `AgentCLIFeature.isEnabled`):
+  per-thread sticky engine buttons (Claude Code / Codex brand icons — select
+  once, every composer message is auto-answered; click again to turn off),
+  streamed draft bubble (token-level Claude, chunk-level Codex) with a live
+  tool-call brief, per-engine session resume with replay fallback, cancel +
+  5-minute timeout, inline errors, and a humanized tool-call brief persisted
+  under each agent answer.
+- **Comment deletion** (trash + confirmation in the thread panel) alongside
+  resolve/reopen; deletion cancels any in-flight agent run.
+- **Chat-style bubbles**: human messages right-aligned, content-hugging, flat
+  accent + white text; agent messages left, gray; continuous corners with a
+  4pt sender-side tail (macOS 13.3+ `UnevenRoundedRectangle`, plain rounded
+  fallback).
 - **Undo (⌘Z)** for adding highlights and notes (reversible ops on the PDF
   view's undo manager). Sticky-note typing undo is the text view's own.
 - **Reply notifications**: agent replies mark threads unread → dock badge count +
@@ -197,8 +216,19 @@ does not embed an LLM.
   menu command.
 - Permission allowlist (Claude Code) for the user's read-only CLI commands was
   discussed but not applied (belongs in user settings, not this repo).
-- The **experimental agent-CLI feature** (`plan.md`) is implemented on branch
-  `experimental/agent-cli` (see the `AgentCLI/` module above). Verified: both
-  CLIs run headless read-only from the scratch dir and resume works
-  (Claude `--resume`, `codex exec resume`); button-driven flow still needs a
-  manual in-app pass on a real thread.
+- Agent-CLI trade-offs & caveats (module details above; original plan.md was
+  implemented and removed):
+  - **Codex runs unsandboxed** (`danger-full-access` + `approval_policy=never`)
+    by explicit user decision so its MCP calls work; its read-only behavior is
+    prompt-enforced only. Claude Code remains genuinely read-only (tool
+    allowlist). Revert path documented at both code sites.
+  - Codex session-id capture is best-effort → silently falls back to
+    replaying the thread; Codex streaming is chunk-level and its tool-call
+    log lags to call completion.
+  - The streaming draft bubble does not auto-scroll the message list.
+  - Codex-only regions: the anchor PNG goes to Claude only; Codex gets page
+    text and a note in the prompt/help.
+  - Runs are capped at 5 minutes (SIGTERM→SIGKILL); one run per thread at a
+    time (a mid-run reply queues exactly one follow-up).
+  - Sidebar "In the book" search results jump to the page but don't select
+    the matched text on arrival.
