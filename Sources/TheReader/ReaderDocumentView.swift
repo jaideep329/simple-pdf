@@ -290,10 +290,7 @@ private struct GlassTabSwitcher: View {
                 .foregroundStyle(selection == tab ? Color.primary : Color.secondary)
                 .background {
                     if selection == tab {
-                        Capsule(style: .continuous)
-                            .fill(.background)
-                            .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
-                            .matchedGeometryEffect(id: "selectedTab", in: namespace)
+                        selectedThumb
                     }
                 }
                 .help(tab.label)
@@ -301,6 +298,21 @@ private struct GlassTabSwitcher: View {
         }
         .padding(4)
         .glassTrack()
+    }
+
+    @ViewBuilder
+    private var selectedThumb: some View {
+        let shape = Capsule(style: .continuous)
+        if #available(macOS 26.0, *) {
+            Color.clear
+                .glassEffect(.regular.interactive(), in: shape)
+                .matchedGeometryEffect(id: "selectedTab", in: namespace)
+        } else {
+            shape
+                .fill(.thickMaterial)
+                .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
+                .matchedGeometryEffect(id: "selectedTab", in: namespace)
+        }
     }
 }
 
@@ -397,12 +409,8 @@ private extension View {
     @ViewBuilder
     func glassTrack() -> some View {
         let shape = Capsule(style: .continuous)
-        if #available(macOS 26.0, *) {
-            glassEffect(.regular, in: shape)
-        } else {
-            background(.regularMaterial, in: shape)
-                .overlay(shape.strokeBorder(.separator.opacity(0.5)))
-        }
+        background(.regularMaterial, in: shape)
+            .overlay(shape.strokeBorder(.separator.opacity(0.35)))
     }
 }
 
