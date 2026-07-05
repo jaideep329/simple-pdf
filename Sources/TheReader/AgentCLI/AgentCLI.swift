@@ -58,8 +58,10 @@ struct AgentAnswer: Sendable {
 }
 
 /// Renders a tool-call list as a compact one-line brief for the UI:
-/// consecutive-order aggregation with counts, MCP names prettified —
-/// ["Read", "Read", "mcp__simple-pdf__get_page"] → "Read ×2 · simple-pdf: get_page".
+/// first-appearance-order aggregation with counts, names humanized —
+/// ["Read", "Read", "mcp__simple-pdf__list_highlights"] → "Read ×2 · Highlights".
+/// The reader's own MCP server is implicit, so its prefix is dropped and its
+/// tool names get friendly labels; other servers keep a "server: tool" form.
 enum AgentToolCallBrief {
     static func format(_ calls: [String]) -> String {
         var counts: [(name: String, count: Int)] = []
@@ -75,12 +77,47 @@ enum AgentToolCallBrief {
             .joined(separator: " · ")
     }
 
-    /// "mcp__<server>__<tool>" → "<server>: <tool>"; anything else unchanged.
+    private static let friendlyToolNames: [String: String] = [
+        "get_current_page": "Current page",
+        "get_page": "Page text",
+        "get_pages": "Page text",
+        "get_selection": "Selection",
+        "list_recent_selections": "Recent selections",
+        "list_highlights": "Highlights",
+        "search": "PDF search",
+        "list_comments": "Comments",
+        "get_comment": "Comment",
+        "open_at_page": "Open page",
+        "add_comment": "Add comment",
+        "reply_to_comment": "Reply",
+        "resolve_comment": "Resolve",
+        "reopen_comment": "Reopen"
+    ]
+
     private static func prettify(_ name: String) -> String {
-        guard name.hasPrefix("mcp__") else { return name }
-        let components = name.components(separatedBy: "__").filter { !$0.isEmpty }
-        guard components.count >= 3 else { return name }
-        return "\(components[1]): \(components.dropFirst(2).joined(separator: "__"))"
+        // Claude's raw MCP form: mcp__<server>__<tool>.
+        if name.hasPrefix("mcp__") {
+            let components = name.components(separatedBy: "__").filter { !$0.isEmpty }
+            if components.count >= 3 {
+                return label(server: components[1], tool: components.dropFirst(2).joined(separator: "__"))
+            }
+        }
+        // Codex's normalized form: "<server>: <tool>".
+        if let separator = name.range(of: ": ") {
+            return label(server: String(name[..<separator.lowerBound]), tool: String(name[separator.upperBound...]))
+        }
+        return capitalizedFirst(name)
+    }
+
+    private static func label(server: String, tool: String) -> String {
+        let friendly = friendlyToolNames[tool]
+            ?? capitalizedFirst(tool.replacingOccurrences(of: "_", with: " "))
+        return server == MCPService.serverName ? friendly : "\(server): \(friendly)"
+    }
+
+    private static func capitalizedFirst(_ text: String) -> String {
+        guard let first = text.first else { return text }
+        return first.uppercased() + text.dropFirst()
     }
 }
 

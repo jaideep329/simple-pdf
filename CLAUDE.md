@@ -128,8 +128,10 @@ does not embed an LLM.
     session id), `CommentThread.autoAnswerEngine: String?` (sticky engine),
     and `CommentMessage.toolCalls: [String]?` (names of tools used to produce
     an agent answer — rendered via `AgentToolCallBrief` as e.g.
-    "Read ×2 · simple-pdf: get_page" under the message bubble and live in the
-    draft bubble); all decode-optional so old sidecar files load.
+    "Read ×2 · Highlights" under the message bubble and live in the draft
+    bubble; the reader's own server prefix is dropped and its tool names get
+    friendly labels, other servers render as "server: Tool"); all
+    decode-optional so old sidecar files load.
 - Comment threads can be **deleted permanently** (trash button + confirmation
   in `CommentThreadPanel`; `ReaderStore.deleteComment` also cancels any
   in-flight agent run) in addition to resolve/reopen.
