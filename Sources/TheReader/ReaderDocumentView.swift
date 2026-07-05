@@ -249,8 +249,11 @@ private struct SidebarView: View {
                 emptyRow("No highlights yet")
             } else {
                 ForEach(items, id: \.id) { highlight in
-                    Button { store.goToPage(number: highlight.page) } label: { HighlightRow(highlight: highlight) }
-                        .buttonStyle(.plain)
+                    HighlightListRow(
+                        highlight: highlight,
+                        open: { store.goToPage(number: highlight.page) },
+                        delete: { store.removeHighlight(id: highlight.id) }
+                    )
                 }
             }
         }
@@ -353,6 +356,36 @@ private struct GlassTabSwitcher: View {
                 .fill(.thickMaterial)
                 .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
                 .matchedGeometryEffect(id: "selectedTab", in: namespace)
+        }
+    }
+}
+
+/// Sidebar highlight row: click to jump, hover-revealed trash (or right-click)
+/// to remove — removal is undoable with ⌘Z.
+private struct HighlightListRow: View {
+    let highlight: MCPHighlight
+    let open: () -> Void
+    let delete: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 4) {
+            Button(action: open) { HighlightRow(highlight: highlight) }
+                .buttonStyle(.plain)
+            if isHovering {
+                Button(action: delete) {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Remove highlight")
+            }
+        }
+        .onHover { isHovering = $0 }
+        .contextMenu {
+            Button(role: .destructive, action: delete) {
+                Label("Remove Highlight", systemImage: "trash")
+            }
         }
     }
 }

@@ -359,6 +359,33 @@ final class ReaderStore: ObservableObject {
         scheduleCurrentPDFSave()
     }
 
+    /// Removes the highlight annotation whose stable id (`SHA256(page+bounds)`,
+    /// as listed by the sidebar/MCP) matches. Undoable via ⌘Z.
+    func removeHighlight(id: String) {
+        guard let document else { return }
+
+        for pageIndex in 0..<document.pageCount {
+            guard let page = document.page(at: pageIndex) else { continue }
+
+            for annotation in page.annotations where annotation.type == "Highlight" {
+                guard highlightID(pageIndex: pageIndex, bounds: annotation.bounds) == id else { continue }
+
+                page.removeAnnotation(annotation)
+                pdfView?.setNeedsDisplay(pdfView?.bounds ?? .zero)
+
+                let placement = AnnotationPlacement(page: page, annotation: annotation)
+                if let undoManager = pdfView?.undoManager {
+                    undoManager.setActionName("Remove Highlight")
+                    undoManager.registerUndo(withTarget: self) { store in
+                        store.setAnnotations([placement], present: true, actionName: "Remove Highlight")
+                    }
+                }
+                scheduleCurrentPDFSave()
+                return
+            }
+        }
+    }
+
     // MARK: - Annotation undo
 
     private func registerUndoForAddedAnnotations(_ items: [AnnotationPlacement], actionName: String) {
