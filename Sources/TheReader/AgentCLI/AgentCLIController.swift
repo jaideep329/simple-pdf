@@ -17,6 +17,9 @@ final class AgentCLIController: ObservableObject {
     weak var store: ReaderStore?
 
     private var tasks: [String: Task<Void, Never>] = [:]
+    /// Threads where a human reply arrived while a run was active; the sticky
+    /// engine answers them once the current run finishes successfully.
+    private var pendingAutoAnswers: Set<String> = []
     private static let runTimeout: TimeInterval = 300
 
     // MARK: - State queries
@@ -30,6 +33,57 @@ final class AgentCLIController: ObservableObject {
     }
 
     func clearError(forThread threadID: String) {
+        errors[threadID] = nil
+    }
+
+    // MARK: - Sticky auto-answer
+
+    /// Selecting an engine makes it the thread's sticky "answer with" choice:
+    /// it answers now (when the latest message is an unanswered human one) and
+    /// keeps answering every new human reply. Selecting it again turns it off.
+    func toggleAutoAnswer(threadID: String, engine: AgentEngineKind) {
+        guard let store,
+              let thread = store.commentThreads.first(where: { $0.id == threadID })
+        else {
+            return
+        }
+
+        if thread.autoAnswerEngine == engine.rawValue {
+            store.setAutoAnswerEngine(threadID: threadID, engineKey: nil)
+            pendingAutoAnswers.remove(threadID)
+            return
+        }
+
+        store.setAutoAnswerEngine(threadID: threadID, engineKey: engine.rawValue)
+        errors[threadID] = nil
+        if thread.messages.last?.author == .human, activeRuns[threadID] == nil {
+            answer(threadID: threadID, using: engine)
+        }
+    }
+
+    /// Called by `ReaderStore.addHumanReply` after a composer message lands.
+    /// Runs the sticky engine, or queues one follow-up if a run is in flight.
+    func humanReplyAdded(threadID: String) {
+        guard AgentCLIFeature.isEnabled,
+              let store,
+              let thread = store.commentThreads.first(where: { $0.id == threadID }),
+              let engineKey = thread.autoAnswerEngine,
+              let engine = AgentEngineKind(rawValue: engineKey)
+        else {
+            return
+        }
+
+        if activeRuns[threadID] == nil {
+            answer(threadID: threadID, using: engine)
+        } else {
+            pendingAutoAnswers.insert(threadID)
+        }
+    }
+
+    /// Called by `ReaderStore.deleteComment` — stop and forget any run state.
+    func threadDeleted(threadID: String) {
+        tasks[threadID]?.cancel()
+        pendingAutoAnswers.remove(threadID)
         errors[threadID] = nil
     }
 
@@ -107,6 +161,7 @@ final class AgentCLIController: ObservableObject {
             } catch is CancellationError {
                 await MainActor.run {
                     self?.clearRun(threadID: threadID)
+                    self?.pendingAutoAnswers.remove(threadID)
                 }
             } catch {
                 let message = (error as? AgentCLIError)?.errorDescription ?? error.localizedDescription
@@ -139,10 +194,19 @@ final class AgentCLIController: ObservableObject {
             // any stored id is stale — drop it rather than retry it next turn.
             store.setAgentSession(threadID: threadID, engineKey: engine.rawValue, sessionID: nil)
         }
+
+        // A reply arrived mid-run: let the sticky engine answer it now.
+        if pendingAutoAnswers.remove(threadID) != nil,
+           let thread = store.commentThreads.first(where: { $0.id == threadID }),
+           let engineKey = thread.autoAnswerEngine,
+           let pendingEngine = AgentEngineKind(rawValue: engineKey) {
+            self.answer(threadID: threadID, using: pendingEngine)
+        }
     }
 
     private func fail(threadID: String, message: String) {
         clearRun(threadID: threadID)
+        pendingAutoAnswers.remove(threadID)
         errors[threadID] = message
     }
 
@@ -201,6 +265,17 @@ final class AgentCLIController: ObservableObject {
                 sections.append(block.joined(separator: "\n"))
             }
         }
+
+        sections.append(
+            """
+            Getting more context: the reader app runs an MCP server named `\(MCPService.serverName)` \
+            (\(SimplePDFMCP.url)) with read tools over this PDF — \(SimplePDFMCP.readOnlyTools.joined(separator: ", ")). \
+            Prefer those tools first whenever you need context beyond what is included here (other pages, \
+            chapters, search, highlights). Only if the MCP server is unavailable, read the PDF file directly \
+            at the absolute path above. Never call its mutating tools \
+            (\(SimplePDFMCP.mutatingTools.joined(separator: ", "))) — the app posts your reply itself.
+            """
+        )
 
         sections.append("Comment thread so far:\n\n\(Self.transcript(of: thread.messages))")
         sections.append("Reply to the reader's latest message.")

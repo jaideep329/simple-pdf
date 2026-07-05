@@ -52,6 +52,10 @@ struct CommentThread: Codable, Sendable, Identifiable, Equatable {
     /// Experimental agent-CLI feature: engine key (`AgentEngineKind.rawValue`)
     /// → resumable CLI session id. Optional so pre-existing sidecar files decode.
     var agentSessions: [String: String]? = nil
+    /// Experimental agent-CLI feature: engine key of the sticky "answer with"
+    /// selection — new human replies auto-trigger this engine. Optional so
+    /// pre-existing sidecar files decode.
+    var autoAnswerEngine: String? = nil
 }
 
 // MARK: - Sidecar store

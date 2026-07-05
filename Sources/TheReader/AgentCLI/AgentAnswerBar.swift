@@ -1,14 +1,16 @@
 import SwiftUI
 
-/// Strip shown above the composer in `CommentThreadPanel`: two "answer with a
-/// local CLI agent" buttons, a thinking/cancel state while a run is active, and
-/// an inline dismissible error. Only mounted when `AgentCLIFeature.isEnabled`.
+/// Strip shown above the composer in `CommentThreadPanel`. The engine buttons
+/// are sticky toggles: selecting one answers the thread now and keeps
+/// auto-answering every message sent from the composer until deselected. Also
+/// hosts the thinking/cancel state and an inline dismissible error. Only
+/// mounted when `AgentCLIFeature.isEnabled`.
 struct AgentAnswerBar: View {
     @ObservedObject var controller: AgentCLIController
     let thread: CommentThread
 
-    private var hasHumanMessage: Bool {
-        thread.messages.contains { $0.author == .human }
+    private var selectedEngine: AgentEngineKind? {
+        thread.autoAnswerEngine.flatMap(AgentEngineKind.init(rawValue:))
     }
 
     var body: some View {
@@ -17,6 +19,12 @@ struct AgentAnswerBar: View {
                 runningRow(engine)
             } else {
                 buttonsRow
+            }
+
+            if let engine = selectedEngine, controller.runningEngine(forThread: thread.id) == nil {
+                Text("New messages are answered by \(engine.displayName) automatically. Click it again to turn off.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
 
             if let error = controller.error(forThread: thread.id) {
@@ -35,27 +43,36 @@ struct AgentAnswerBar: View {
                 .foregroundStyle(.secondary)
 
             ForEach(AgentEngineKind.allCases) { engine in
-                Button {
-                    controller.answer(threadID: thread.id, using: engine)
-                } label: {
-                    Label(engine.displayName, systemImage: iconName(for: engine))
-                        .font(.caption)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(!hasHumanMessage)
-                .help(helpText(for: engine))
+                engineButton(engine)
             }
 
             Spacer()
         }
+    }
 
-        let resumable = AgentEngineKind.allCases.filter { thread.agentSessions?[$0.rawValue] != nil }
-        if !resumable.isEmpty {
-            Text("Continues the \(resumable.map(\.displayName).joined(separator: " and ")) conversation for this thread.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+    @ViewBuilder
+    private func engineButton(_ engine: AgentEngineKind) -> some View {
+        let isSelected = selectedEngine == engine
+        let button = Button {
+            controller.toggleAutoAnswer(threadID: thread.id, engine: engine)
+        } label: {
+            Label {
+                Text(engine.displayName)
+                    .font(.caption)
+            } icon: {
+                AgentEngineIcon(engine: engine)
+            }
         }
+
+        Group {
+            if isSelected {
+                button.buttonStyle(.borderedProminent)
+            } else {
+                button.buttonStyle(.bordered)
+            }
+        }
+        .controlSize(.small)
+        .help(helpText(for: engine, isSelected: isSelected))
     }
 
     @ViewBuilder
@@ -97,12 +114,13 @@ struct AgentAnswerBar: View {
         }
     }
 
-    private func iconName(for engine: AgentEngineKind) -> String {
-        engine == .claudeCode ? "sparkles" : "chevron.left.forwardslash.chevron.right"
-    }
-
-    private func helpText(for engine: AgentEngineKind) -> String {
-        var parts = ["Answer this thread with the local \(engine.displayName) CLI (read-only)."]
+    private func helpText(for engine: AgentEngineKind, isSelected: Bool) -> String {
+        if isSelected {
+            return "Auto-answer with \(engine.displayName) is on for this thread — click to turn off."
+        }
+        var parts = [
+            "Answers this thread with the local \(engine.displayName) CLI (read-only) and keeps answering new messages until turned off."
+        ]
         if thread.anchor.kind == .region, !engine.supportsImages {
             parts.append("\(engine.displayName) can't see the region snapshot — it gets the page text only.")
         }

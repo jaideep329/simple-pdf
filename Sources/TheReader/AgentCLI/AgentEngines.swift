@@ -39,11 +39,26 @@ struct ClaudeCodeEngine: AgentEngine {
             throw AgentCLIError.notInstalled(kind)
         }
 
+        // Reader-app MCP server: attached explicitly (it is not in the user's
+        // global config) and restricted to its read-only tools; strict mode
+        // skips the user's other configured MCP servers.
+        let mcpTools = SimplePDFMCP.readOnlyTools
+            .map { "mcp__\(MCPService.serverName)__\($0)" }
+            .joined(separator: ",")
+        let deniedMCPTools = SimplePDFMCP.mutatingTools
+            .map { "mcp__\(MCPService.serverName)__\($0)" }
+            .joined(separator: ",")
+        let mcpConfig = """
+        {"mcpServers":{"\(MCPService.serverName)":{"type":"http","url":"\(SimplePDFMCP.url)","headers":{"Authorization":"Bearer \(MCPService.bearerToken)"}}}}
+        """
+
         var arguments = [
             "-p", prompt,
             "--output-format", "json",
-            "--allowedTools", "Read,Glob,Grep",
-            "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task,TodoWrite"
+            "--mcp-config", mcpConfig,
+            "--strict-mcp-config",
+            "--allowedTools", "Read,Glob,Grep,\(mcpTools)",
+            "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task,TodoWrite,\(deniedMCPTools)"
         ]
         if let sessionID {
             arguments += ["--resume", sessionID]

@@ -48,6 +48,27 @@ struct AgentAnswer: Sendable {
     let sessionID: String?
 }
 
+/// The reader's own MCP server, as seen by the spawned agents: they should
+/// pull extra PDF context from it first and only fall back to reading the PDF
+/// file directly. The mutating tools stay off-limits — the app posts the
+/// agent's reply itself.
+enum SimplePDFMCP {
+    static var url: String {
+        "http://127.0.0.1:\(MCPService.defaultPort)\(MCPService.endpointPath)"
+    }
+
+    static let readOnlyTools = [
+        "get_current_page", "get_page", "get_pages", "get_selection",
+        "list_recent_selections", "list_highlights", "search",
+        "list_comments", "get_comment"
+    ]
+
+    static let mutatingTools = [
+        "open_at_page", "add_comment", "reply_to_comment",
+        "resolve_comment", "reopen_comment"
+    ]
+}
+
 enum AgentCLIError: LocalizedError {
     case notInstalled(AgentEngineKind)
     case launchFailed(String)

@@ -7,6 +7,7 @@ import SwiftUI
 struct CommentThreadPanel: View {
     @EnvironmentObject private var store: ReaderStore
     @State private var draft = ""
+    @State private var isConfirmingDelete = false
 
     var body: some View {
         if let thread = store.activeCommentThread {
@@ -67,6 +68,25 @@ struct CommentThreadPanel: View {
             }
             .buttonStyle(.borderless)
             .help(thread.status == .resolved ? "Reopen" : "Resolve")
+
+            Button {
+                isConfirmingDelete = true
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("Delete this comment thread")
+            .confirmationDialog(
+                "Delete this comment thread?",
+                isPresented: $isConfirmingDelete
+            ) {
+                Button("Delete", role: .destructive) {
+                    store.deleteComment(id: thread.id)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The thread and all of its messages are removed permanently. This cannot be undone.")
+            }
 
             Button {
                 store.closeActiveComment()

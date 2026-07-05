@@ -801,6 +801,14 @@ final class ReaderStore: ObservableObject {
         return commentThreads[index]
     }
 
+    /// Experimental agent-CLI feature: stores (or clears, when `engineKey` is
+    /// nil) the sticky "answer with" engine for a thread.
+    func setAutoAnswerEngine(threadID: String, engineKey: String?) {
+        guard let index = commentThreads.firstIndex(where: { $0.id == threadID }) else { return }
+        commentThreads[index].autoAnswerEngine = engineKey
+        persistComments()
+    }
+
     /// Experimental agent-CLI feature: stores (or clears, when `sessionID` is
     /// nil) the resumable CLI session id for one engine on a thread.
     func setAgentSession(threadID: String, engineKey: String, sessionID: String?) {
@@ -878,7 +886,27 @@ final class ReaderStore: ObservableObject {
 
     @discardableResult
     func addHumanReply(threadID: String, body: String) -> CommentThread? {
-        replyToComment(id: threadID, body: body, author: .human)
+        let thread = replyToComment(id: threadID, body: body, author: .human)
+        if thread != nil {
+            agentCLI?.humanReplyAdded(threadID: threadID)
+        }
+        return thread
+    }
+
+    /// Permanently removes a thread (and its persisted sidecar entry), unlike
+    /// resolving, which keeps it. Cancels any in-flight agent run for it.
+    func deleteComment(id: String) {
+        guard let index = commentThreads.firstIndex(where: { $0.id == id }) else { return }
+
+        agentCLI?.threadDeleted(threadID: id)
+        if activeCommentThreadID == id {
+            activeCommentThreadID = nil
+        }
+        if unreadCommentThreadIDs.remove(id) != nil {
+            updateCommentBadge()
+        }
+        commentThreads.remove(at: index)
+        persistComments()
     }
 
     /// Builds a text anchor for the agent's `add_comment` (page + optional quote;

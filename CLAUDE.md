@@ -83,16 +83,34 @@ does not embed an LLM.
     `thread.started`/`item.completed` JSONL shapes; session id best-effort).
   - `AgentCLIController.swift` — ObservableObject owned by `ReaderStore` (only
     when flag on): builds prompts (thread transcript + anchor page ±1 text via
-    `mcpPages` + PDF path; region PNG written to the scratch dir for Claude
-    only), one run per thread, resume-else-replay with fallback (a failed
-    resume replays the stored thread and drops the stale id), appends the
-    answer via `replyToComment(author: .agent)`. Scratch cwd for all runs:
-    `~/Library/Application Support/SimplePDF/agent/`.
+    `mcpPages` + PDF path + MCP-first guidance; region PNG written to the
+    scratch dir for Claude only), one run per thread, resume-else-replay with
+    fallback (a failed resume replays the stored thread and drops the stale
+    id), appends the answer via `replyToComment(author: .agent)`. **Sticky
+    auto-answer**: `toggleAutoAnswer` persists an engine per thread;
+    `ReaderStore.addHumanReply` → `humanReplyAdded` auto-runs it on every
+    composer send (a reply landing mid-run queues exactly one follow-up run).
+    Scratch cwd for all runs: `~/Library/Application Support/SimplePDF/agent/`.
+  - Agents get PDF context **MCP-first**: `SimplePDFMCP` (in `AgentCLI.swift`)
+    lists the server's read-only vs mutating tools; the prompt tells engines to
+    prefer the `simple-pdf` MCP server and fall back to reading the PDF path
+    directly. Claude gets the server attached explicitly via `--mcp-config` +
+    `--strict-mcp-config` (it's not in user scope) with only read-only
+    `mcp__simple-pdf__*` tools allowed; Codex already has it in
+    `~/.codex/config.toml`.
   - `AgentAnswerBar.swift` — strip above the composer in `CommentThreadPanel`:
-    "Answer with Claude Code / Codex" buttons, thinking + Cancel state, inline
-    dismissible error, session-continuation hint.
-  - Data model: `CommentThread.agentSessions: [String: String]?`
-    (engine → session id; decode-optional so old sidecar files load).
+    sticky engine toggle buttons (select once → every sent message is
+    auto-answered by that engine; click again to turn off), thinking + Cancel
+    state, inline dismissible error.
+  - `AgentEngineIcons.swift` — Claude/OpenAI brand marks as embedded SVG
+    strings rendered via `NSImage` template images (the bundle script copies
+    only the bare binary, so `Bundle.module` resources can't be used).
+  - Data model: `CommentThread.agentSessions: [String: String]?` (engine →
+    session id) and `CommentThread.autoAnswerEngine: String?` (sticky engine);
+    both decode-optional so old sidecar files load.
+- Comment threads can be **deleted permanently** (trash button + confirmation
+  in `CommentThreadPanel`; `ReaderStore.deleteComment` also cancels any
+  in-flight agent run) in addition to resolve/reopen.
 
 ## Storage model
 

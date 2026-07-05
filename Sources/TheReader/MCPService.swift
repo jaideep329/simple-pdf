@@ -60,7 +60,7 @@ final class MCPService: @unchecked Sendable {
     static let serverName = "simple-pdf"
     static let serverVersion = "0.1.0"
     private static let displayName = "Simple PDF"
-    private static let endpointPath = "/mcp"
+    static let endpointPath = "/mcp"
     private static let protocolVersion = "2025-11-25"
     private static let supportDirectoryNames = ["SimplePDF", "Simple PDF", "TheReader", "the-reader"]
     private static let toolNames = [
