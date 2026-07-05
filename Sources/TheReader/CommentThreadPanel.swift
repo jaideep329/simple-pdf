@@ -156,16 +156,15 @@ struct CommentThreadPanel: View {
                 }
 
                 // Human bubbles hug their content and sit right, iMessage
-                // style — solid accent + white text; agents stay subtle gray.
+                // style — flat accent + white text (same accent as the engine
+                // selector buttons); agents stay subtle gray.
                 Text(markdown(message.body))
                     .textSelection(.enabled)
                     .foregroundStyle(isHuman ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
                     .padding(.horizontal, 11)
                     .padding(.vertical, 7)
                     .background(
-                        isHuman
-                            ? AnyShapeStyle(Color.accentColor.gradient)
-                            : AnyShapeStyle(Color.secondary.opacity(0.12)),
+                        isHuman ? Color.accentColor : Color.secondary.opacity(0.12),
                         in: bubbleShape(isHuman: isHuman)
                     )
 
