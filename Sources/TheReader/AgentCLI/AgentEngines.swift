@@ -258,10 +258,16 @@ struct CodexEngine: AgentEngine {
         if let sessionID {
             arguments += ["resume", sessionID]
         }
+        // The simple-pdf MCP server is disabled for Codex runs: under any
+        // sandbox other than danger-full-access, Codex cancels every MCP tool
+        // call ("user cancelled MCP tool call"), so leaving it visible only
+        // wastes turns on doomed calls. Read-only stays non-negotiable; the
+        // prompt gives Codex the page text directly instead.
         arguments += [
             "--json",
             "--skip-git-repo-check",
             "-c", "sandbox_mode=\"read-only\"",
+            "-c", "mcp_servers.\(MCPService.serverName).enabled=false",
             prompt
         ]
 

@@ -124,7 +124,7 @@ final class AgentCLIController: ObservableObject {
         // Prompts are assembled up front on the main thread (page text comes
         // from PDFKit via the store); the detached task only touches strings.
         let imagePath = engineKind.supportsImages ? writeRegionSnapshot(for: thread) : nil
-        let replayPrompt = replayPrompt(for: thread, imagePath: imagePath)
+        let replayPrompt = replayPrompt(for: thread, engine: engineKind, imagePath: imagePath)
         let resumePrompt = resumePrompt(for: thread)
         let sessionID = thread.agentSessions?[engineKind.rawValue]
         let workingDirectory = Self.scratchDirectory()
@@ -262,7 +262,7 @@ final class AgentCLIController: ObservableObject {
 
     // MARK: - Prompt assembly
 
-    private func replayPrompt(for thread: CommentThread, imagePath: String?) -> String {
+    private func replayPrompt(for thread: CommentThread, engine: AgentEngineKind, imagePath: String?) -> String {
         var sections: [String] = []
 
         sections.append(
@@ -311,16 +311,27 @@ final class AgentCLIController: ObservableObject {
             }
         }
 
-        sections.append(
-            """
-            Getting more context: the reader app runs an MCP server named `\(MCPService.serverName)` \
-            (\(SimplePDFMCP.url)) with read tools over this PDF — \(SimplePDFMCP.readOnlyTools.joined(separator: ", ")). \
-            Prefer those tools first whenever you need context beyond what is included here (other pages, \
-            chapters, search, highlights). Only if the MCP server is unavailable, read the PDF file directly \
-            at the absolute path above. Never call its mutating tools \
-            (\(SimplePDFMCP.mutatingTools.joined(separator: ", "))) — the app posts your reply itself.
-            """
-        )
+        if engine.supportsMCP {
+            sections.append(
+                """
+                Getting more context: the reader app runs an MCP server named `\(MCPService.serverName)` \
+                (\(SimplePDFMCP.url)) with read tools over this PDF — \(SimplePDFMCP.readOnlyTools.joined(separator: ", ")). \
+                Prefer those tools first whenever you need context beyond what is included here (other pages, \
+                chapters, search, highlights). Only if the MCP server is unavailable, read the PDF file directly \
+                at the absolute path above. Never call its mutating tools \
+                (\(SimplePDFMCP.mutatingTools.joined(separator: ", "))) — the app posts your reply itself.
+                """
+            )
+        } else {
+            sections.append(
+                """
+                Getting more context: you do not have MCP access in this sandboxed run — do not attempt \
+                MCP tool calls (they will be cancelled). The page text below is your primary context; \
+                you can also read files on disk read-only (e.g. the PDF at the absolute path above) if \
+                you need more.
+                """
+            )
+        }
 
         sections.append("Comment thread so far:\n\n\(Self.transcript(of: thread.messages))")
         sections.append("Reply to the reader's latest message.")
