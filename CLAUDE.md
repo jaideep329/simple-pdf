@@ -7,12 +7,11 @@ navigation** surface; the **agent** does the reasoning (with full context via
 MCP); **Obsidian** is the long-term memory. The app is not a chat client and
 does not embed an LLM.
 
-- Repo folder: `the-reader`; GitHub: `jaideep329/simple-pdf` (private).
+- Repo folder: `the-reader`; GitHub: `jaideep329/simple-pdf`.
 - App display name **Simple PDF**, executable `SimplePDF`, bundle id
   `com.jaideepsingh.simplepdf`.
 - SwiftUI + AppKit + PDFKit. Deploy target **macOS 13**; developed/run on macOS 26
   (Liquid Glass APIs are availability-gated to `macOS 26`).
-- Git author: `Jaideep <jaideep329@gmail.com>`.
 
 ## Build / run / install
 
@@ -208,6 +207,10 @@ does not embed an LLM.
 - Highlight id = `SHA256(pageIndex + bounds)`; comment ids = UUID.
 - MCP payloads are compact JSON returned as tool text; region images as image
   blocks.
+- Sidebar highlights/notes are **cached against `annotationsRevision`**
+  (`ReaderStore.sidebarHighlights/sidebarNotes`): the uncached walk extracts
+  text per highlight (~80ms main-thread on a 370-page book) and these
+  accessors are hit from SwiftUI `body` on every sidebar render.
 
 ## Known gaps / open items
 

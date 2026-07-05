@@ -600,6 +600,18 @@ final class ReaderStore: ObservableObject {
     }
 
     func mcpHighlights(limit: Int?) -> [MCPHighlight] {
+        let all = sidebarHighlights()
+        if let limit, limit > 0, all.count > limit {
+            return Array(all.prefix(limit))
+        }
+        return all
+    }
+
+    /// Walks every page and extracts each highlight's text — 75–125ms on the
+    /// main thread for a ~370-page book, so callers go through the
+    /// `annotationsRevision`-keyed cache in `sidebarHighlights()` instead of
+    /// calling this per SwiftUI render.
+    private func computeAllHighlights() -> [MCPHighlight] {
         guard let document else { return [] }
 
         var highlights: [MCPHighlight] = []
@@ -626,10 +638,6 @@ final class ReaderStore: ObservableObject {
         }
 
         highlights.sort { ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast) }
-
-        if let limit, limit > 0, highlights.count > limit {
-            return Array(highlights.prefix(limit))
-        }
         return highlights
     }
 
@@ -936,12 +944,34 @@ final class ReaderStore: ObservableObject {
     }
 
     // MARK: - Sidebar data
+    //
+    // Cached against `annotationsRevision` (bumped on document load and every
+    // annotation mutation): these accessors are hit from SwiftUI `body` on
+    // every sidebar render, and recomputing highlights walks the whole
+    // document with per-highlight text extraction.
+
+    private var cachedHighlights: (revision: Int, items: [MCPHighlight])?
+    private var cachedNotes: (revision: Int, items: [NoteItem])?
 
     func sidebarHighlights() -> [MCPHighlight] {
-        mcpHighlights(limit: nil)
+        if let cachedHighlights, cachedHighlights.revision == annotationsRevision {
+            return cachedHighlights.items
+        }
+        let items = computeAllHighlights()
+        cachedHighlights = (annotationsRevision, items)
+        return items
     }
 
     func sidebarNotes() -> [NoteItem] {
+        if let cachedNotes, cachedNotes.revision == annotationsRevision {
+            return cachedNotes.items
+        }
+        let items = computeAllNotes()
+        cachedNotes = (annotationsRevision, items)
+        return items
+    }
+
+    private func computeAllNotes() -> [NoteItem] {
         guard let document else { return [] }
 
         var notes: [NoteItem] = []
