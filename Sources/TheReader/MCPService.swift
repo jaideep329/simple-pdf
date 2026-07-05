@@ -23,6 +23,7 @@ final class ReaderMCPBridge {
         store?.mcpPages(from: from, to: to, includeText: includeText) ?? []
     }
     func highlights(limit: Int?) -> [MCPHighlight] { store?.mcpHighlights(limit: limit) ?? [] }
+    func notes() -> [NoteItem] { store?.sidebarNotes() ?? [] }
     func recentSelections(limit: Int) -> [SelectionEntry] { store?.mcpRecentSelections(limit: limit) ?? [] }
     func currentOrLatestSelection() -> SelectionEntry? { store?.mcpCurrentOrLatestSelection() }
     func search(query: String, limit: Int) -> [MCPSearchHit] { store?.mcpSearch(query: query, limit: limit) ?? [] }
@@ -70,6 +71,7 @@ final class MCPService: @unchecked Sendable {
         "get_selection",
         "list_recent_selections",
         "list_highlights",
+        "list_notes",
         "open_at_page",
         "search",
         "list_comments",
@@ -244,6 +246,16 @@ final class MCPService: @unchecked Sendable {
             let limit = args["limit"]?.intValue
             return text(json(await bridge.highlights(limit: limit)))
 
+        case "list_notes":
+            var notes = await bridge.notes()
+            if let page = args["page"]?.intValue {
+                notes = notes.filter { $0.page == page }
+            }
+            if let limit = args["limit"]?.intValue, limit > 0, notes.count > limit {
+                notes = Array(notes.prefix(limit))
+            }
+            return text(json(notes))
+
         case "open_at_page":
             guard let page = args["page"]?.intValue else {
                 return text("Missing required argument: page", isError: true)
@@ -394,9 +406,19 @@ final class MCPService: @unchecked Sendable {
             ),
             Tool(
                 name: "list_highlights",
-                description: "All highlights in the open PDF, newest first by modification time, each with highlighted text, page, color, and a reader deep link.",
+                description: "All highlights in the open PDF, newest first by modification time, each with highlighted text, page, color, an optional attached note, and a reader deep link. (Distinct from sticky notes — see list_notes — and comment threads — see list_comments.)",
                 inputSchema: objectSchema(
                     properties: ["limit": prop("number", "Maximum number of highlights to return.")]
+                )
+            ),
+            Tool(
+                name: "list_notes",
+                description: "All sticky notes in the open PDF, in page order, each with its text, page, and a reader deep link. These are standalone note annotations placed on the page — distinct from highlights (list_highlights) and comment threads (list_comments).",
+                inputSchema: objectSchema(
+                    properties: [
+                        "page": prop("number", "Filter to a 1-based page number."),
+                        "limit": prop("number", "Maximum number of notes to return."),
+                    ]
                 )
             ),
             Tool(

@@ -42,7 +42,7 @@ struct MCPSearchHit: Codable, Sendable {
     let deepLink: String?
 }
 
-struct NoteItem: Identifiable, Sendable {
+struct NoteItem: Identifiable, Codable, Sendable {
     let id: String
     let text: String
     let page: Int

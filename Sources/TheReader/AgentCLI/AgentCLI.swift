@@ -84,6 +84,7 @@ enum AgentToolCallBrief {
         "get_selection": "Selection",
         "list_recent_selections": "Recent selections",
         "list_highlights": "Highlights",
+        "list_notes": "Notes",
         "search": "PDF search",
         "list_comments": "Comments",
         "get_comment": "Comment",
@@ -132,7 +133,7 @@ enum SimplePDFMCP {
 
     static let readOnlyTools = [
         "get_current_page", "get_page", "get_pages", "get_selection",
-        "list_recent_selections", "list_highlights", "search",
+        "list_recent_selections", "list_highlights", "list_notes", "search",
         "list_comments", "get_comment"
     ]
 
