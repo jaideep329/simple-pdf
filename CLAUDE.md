@@ -65,6 +65,34 @@ does not embed an LLM.
   composer, resolve/close.
 - **`MCPService.swift`** — in-process MCP server + `ReaderMCPBridge`
   (`@MainActor`) + the `Network.framework` loopback HTTP listener.
+- **`AgentCLI/`** (branch `experimental/agent-cli`) — isolated "answer a comment
+  thread with a local CLI agent" module, all gated behind
+  `AgentCLIFeature.isEnabled` (in `AgentCLI.swift`):
+  - `AgentCLI.swift` — feature flag, `AgentEngineKind` (claude-code | codex;
+    rawValue is the session-map key), `AgentAnswer`, `AgentCLIError`.
+  - `AgentCLIProcess.swift` — subprocess runner: captures the login-shell PATH
+    once (`zsh -l`), resolves the CLI binary, runs with timeout (SIGTERM →
+    SIGKILL), Task-cancellation → SIGTERM, stdin = /dev/null so prompts fail
+    fast instead of hanging.
+  - `AgentEngines.swift` — `AgentEngine` protocol + `ClaudeCodeEngine`
+    (`claude -p … --output-format json`, read-only via
+    `--allowedTools Read,Glob,Grep` + disallow list, `--resume <id>`; parses
+    the result event out of the JSON **array** newer CLIs emit) and
+    `CodexEngine` (`codex exec [resume <id>] --json --skip-git-repo-check -c
+    'sandbox_mode="read-only"'`; parses old `msg.*` and new
+    `thread.started`/`item.completed` JSONL shapes; session id best-effort).
+  - `AgentCLIController.swift` — ObservableObject owned by `ReaderStore` (only
+    when flag on): builds prompts (thread transcript + anchor page ±1 text via
+    `mcpPages` + PDF path; region PNG written to the scratch dir for Claude
+    only), one run per thread, resume-else-replay with fallback (a failed
+    resume replays the stored thread and drops the stale id), appends the
+    answer via `replyToComment(author: .agent)`. Scratch cwd for all runs:
+    `~/Library/Application Support/SimplePDF/agent/`.
+  - `AgentAnswerBar.swift` — strip above the composer in `CommentThreadPanel`:
+    "Answer with Claude Code / Codex" buttons, thinking + Cancel state, inline
+    dismissible error, session-continuation hint.
+  - Data model: `CommentThread.agentSessions: [String: String]?`
+    (engine → session id; decode-optional so old sidecar files load).
 
 ## Storage model
 
@@ -127,4 +155,8 @@ does not embed an LLM.
   menu command.
 - Permission allowlist (Claude Code) for the user's read-only CLI commands was
   discussed but not applied (belongs in user settings, not this repo).
-- Next planned work is the **experimental agent-CLI feature** — see `plan.md`.
+- The **experimental agent-CLI feature** (`plan.md`) is implemented on branch
+  `experimental/agent-cli` (see the `AgentCLI/` module above). Verified: both
+  CLIs run headless read-only from the scratch dir and resume works
+  (Claude `--resume`, `codex exec resume`); button-driven flow still needs a
+  manual in-app pass on a real thread.

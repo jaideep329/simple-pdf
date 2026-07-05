@@ -49,6 +49,9 @@ struct CommentThread: Codable, Sendable, Identifiable, Equatable {
     var createdAt: Date
     var updatedAt: Date
     var messages: [CommentMessage]
+    /// Experimental agent-CLI feature: engine key (`AgentEngineKind.rawValue`)
+    /// → resumable CLI session id. Optional so pre-existing sidecar files decode.
+    var agentSessions: [String: String]? = nil
 }
 
 // MARK: - Sidecar store

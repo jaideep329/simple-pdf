@@ -31,6 +31,10 @@ struct CommentThreadPanel: View {
                     .padding(12)
                 }
                 Divider()
+                if AgentCLIFeature.isEnabled, let agentCLI = store.agentCLI {
+                    AgentAnswerBar(controller: agentCLI, thread: thread)
+                    Divider()
+                }
                 composer(thread)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

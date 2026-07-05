@@ -88,11 +88,15 @@ final class ReaderStore: ObservableObject {
     private var activeFileAccess: SecurityScopedFileAccess?
     private var mcpService: MCPService?
 
+    /// Experimental agent-CLI feature; nil unless `AgentCLIFeature.isEnabled`.
+    private(set) var agentCLI: AgentCLIController?
+
     init() {
         startLifecycleObservers()
         refreshRecentPDFs()
         restoreLastPDF()
         startMCPService()
+        startAgentCLI()
     }
 
     deinit {
@@ -107,6 +111,13 @@ final class ReaderStore: ObservableObject {
         let service = MCPService(bridge: ReaderMCPBridge(store: self))
         mcpService = service
         Task { await service.start() }
+    }
+
+    private func startAgentCLI() {
+        guard AgentCLIFeature.isEnabled else { return }
+        let controller = AgentCLIController()
+        controller.store = self
+        agentCLI = controller
     }
 
     var displayTitle: String {
@@ -788,6 +799,21 @@ final class ReaderStore: ObservableObject {
         commentThreads[index].updatedAt = Date()
         persistComments()
         return commentThreads[index]
+    }
+
+    /// Experimental agent-CLI feature: stores (or clears, when `sessionID` is
+    /// nil) the resumable CLI session id for one engine on a thread.
+    func setAgentSession(threadID: String, engineKey: String, sessionID: String?) {
+        guard let index = commentThreads.firstIndex(where: { $0.id == threadID }) else { return }
+
+        var sessions = commentThreads[index].agentSessions ?? [:]
+        if let sessionID {
+            sessions[engineKey] = sessionID
+        } else {
+            sessions.removeValue(forKey: engineKey)
+        }
+        commentThreads[index].agentSessions = sessions.isEmpty ? nil : sessions
+        persistComments()
     }
 
     var activeCommentThread: CommentThread? {
