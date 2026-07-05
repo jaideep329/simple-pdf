@@ -145,20 +145,28 @@ struct CommentThreadPanel: View {
     @ViewBuilder
     private func messageRow(_ message: CommentMessage) -> some View {
         let isHuman = message.author == .human
-        HStack {
-            if isHuman { Spacer(minLength: 28) }
-            VStack(alignment: isHuman ? .trailing : .leading, spacing: 2) {
-                Text(isHuman ? "You" : (message.agentName ?? "Agent"))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+        HStack(alignment: .bottom) {
+            if isHuman { Spacer(minLength: 44) }
+            VStack(alignment: isHuman ? .trailing : .leading, spacing: 3) {
+                if !isHuman {
+                    Text(message.agentName ?? "Agent")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 4)
+                }
+
+                // Human bubbles hug their content and sit right, iMessage
+                // style — solid accent + white text; agents stay subtle gray.
                 Text(markdown(message.body))
                     .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
+                    .foregroundStyle(isHuman ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                    .padding(.horizontal, 11)
                     .padding(.vertical, 7)
                     .background(
-                        isHuman ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.12),
-                        in: RoundedRectangle(cornerRadius: 10)
+                        isHuman
+                            ? AnyShapeStyle(Color.accentColor.gradient)
+                            : AnyShapeStyle(Color.secondary.opacity(0.12)),
+                        in: bubbleShape(isHuman: isHuman)
                     )
 
                 if !isHuman, let toolCalls = message.toolCalls, !toolCalls.isEmpty {
@@ -166,11 +174,29 @@ struct CommentThreadPanel: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .lineLimit(2)
+                        .padding(.leading, 4)
                         .help("Tools \(message.agentName ?? "the agent") used for this answer")
                 }
             }
-            if !isHuman { Spacer(minLength: 28) }
+            if !isHuman { Spacer(minLength: 44) }
         }
+    }
+
+    /// Chat-style bubble: three fully rounded corners and a tighter "tail"
+    /// corner on the sender's side.
+    private func bubbleShape(isHuman: Bool) -> AnyShape {
+        if #available(macOS 13.3, *) {
+            return AnyShape(
+                UnevenRoundedRectangle(
+                    topLeadingRadius: 14,
+                    bottomLeadingRadius: isHuman ? 14 : 4,
+                    bottomTrailingRadius: isHuman ? 4 : 14,
+                    topTrailingRadius: 14,
+                    style: .continuous
+                )
+            )
+        }
+        return AnyShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private func markdown(_ string: String) -> AttributedString {

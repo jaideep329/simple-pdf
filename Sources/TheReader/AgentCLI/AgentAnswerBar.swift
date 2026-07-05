@@ -173,13 +173,28 @@ struct AgentStreamingBubble: View {
                         }
                     }
                     .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, 11)
                     .padding(.vertical, 7)
-                    .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                    .background(Color.secondary.opacity(0.12), in: Self.bubbleShape)
                 }
-                Spacer(minLength: 28)
+                Spacer(minLength: 44)
             }
         }
+    }
+
+    /// Mirrors the agent bubble shape in `CommentThreadPanel.messageRow`.
+    private static var bubbleShape: AnyShape {
+        if #available(macOS 13.3, *) {
+            return AnyShape(
+                UnevenRoundedRectangle(
+                    topLeadingRadius: 14,
+                    bottomLeadingRadius: 4,
+                    bottomTrailingRadius: 14,
+                    topTrailingRadius: 14,
+                    style: .continuous
+                )
+            )
+        }
+        return AnyShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
