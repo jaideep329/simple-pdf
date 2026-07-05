@@ -291,19 +291,37 @@ final class ReaderStore: ObservableObject {
             return
         }
 
+        // One annotation per page with a quad per line — a continuous
+        // multi-line selection is a single highlight (in the sidebar, over
+        // MCP, and for undo), not one per line.
         var added: [AnnotationPlacement] = []
-        for lineSelection in selection.selectionsByLine() {
-            for page in lineSelection.pages {
-                let bounds = lineSelection.bounds(for: page).insetBy(dx: -1.5, dy: -1.5)
-                guard !bounds.isNull, !bounds.isEmpty else { continue }
-
-                let annotation = PDFAnnotation(bounds: bounds, forType: .highlight, withProperties: nil)
-                annotation.color = NSColor.systemYellow.withAlphaComponent(0.45)
-                annotation.userName = NSFullUserName()
-                annotation.modificationDate = Date()
-                page.addAnnotation(annotation)
-                added.append(AnnotationPlacement(page: page, annotation: annotation))
+        for page in selection.pages {
+            var lineRects: [CGRect] = []
+            for lineSelection in selection.selectionsByLine()
+            where lineSelection.pages.contains(where: { $0 === page }) {
+                let rect = lineSelection.bounds(for: page).insetBy(dx: -1.5, dy: -1.5)
+                guard !rect.isNull, !rect.isEmpty else { continue }
+                lineRects.append(rect)
             }
+            guard !lineRects.isEmpty else { continue }
+
+            let bounds = lineRects.reduce(CGRect.null) { $0.union($1) }
+            let annotation = PDFAnnotation(bounds: bounds, forType: .highlight, withProperties: nil)
+            annotation.color = NSColor.systemYellow.withAlphaComponent(0.45)
+            annotation.userName = NSFullUserName()
+            annotation.modificationDate = Date()
+            // Quad order per line: top-left, top-right, bottom-left,
+            // bottom-right, relative to the annotation bounds' origin.
+            annotation.quadrilateralPoints = lineRects.flatMap { rect in
+                [
+                    NSValue(point: NSPoint(x: rect.minX - bounds.minX, y: rect.maxY - bounds.minY)),
+                    NSValue(point: NSPoint(x: rect.maxX - bounds.minX, y: rect.maxY - bounds.minY)),
+                    NSValue(point: NSPoint(x: rect.minX - bounds.minX, y: rect.minY - bounds.minY)),
+                    NSValue(point: NSPoint(x: rect.maxX - bounds.minX, y: rect.minY - bounds.minY)),
+                ]
+            }
+            page.addAnnotation(annotation)
+            added.append(AnnotationPlacement(page: page, annotation: annotation))
         }
 
         if added.isEmpty {
@@ -620,8 +638,7 @@ final class ReaderStore: ObservableObject {
 
             for annotation in page.annotations where annotation.type == "Highlight" {
                 let bounds = annotation.bounds
-                let text = page.selection(for: bounds)?.string?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let text = highlightText(for: annotation, on: page)
 
                 highlights.append(
                     MCPHighlight(
@@ -639,6 +656,35 @@ final class ReaderStore: ObservableObject {
 
         highlights.sort { ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast) }
         return highlights
+    }
+
+    /// Text under a highlight. Multi-line highlights carry one quad per line —
+    /// extracting per quad keeps the text exact; the union bounds would sweep
+    /// in unselected words beside the first/last lines. Falls back to the
+    /// bounds for legacy single-rect highlights.
+    private func highlightText(for annotation: PDFAnnotation, on page: PDFPage) -> String {
+        let bounds = annotation.bounds
+        if let quads = annotation.quadrilateralPoints, quads.count >= 8 {
+            var parts: [String] = []
+            for start in stride(from: 0, to: quads.count - 3, by: 4) {
+                let points = quads[start..<(start + 4)].map(\.pointValue)
+                let xs = points.map(\.x)
+                let ys = points.map(\.y)
+                guard let minX = xs.min(), let maxX = xs.max(),
+                      let minY = ys.min(), let maxY = ys.max() else { continue }
+                let lineRect = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+                    .offsetBy(dx: bounds.minX, dy: bounds.minY)
+                if let line = page.selection(for: lineRect)?.string?
+                    .trimmingCharacters(in: .whitespacesAndNewlines), !line.isEmpty {
+                    parts.append(line)
+                }
+            }
+            if !parts.isEmpty {
+                return parts.joined(separator: " ")
+            }
+        }
+        return page.selection(for: bounds)?.string?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     func mcpRecentSelections(limit: Int) -> [SelectionEntry] {
