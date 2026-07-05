@@ -234,11 +234,11 @@ private final class ClaudeStreamParser: @unchecked Sendable {
 
 // MARK: - Codex
 
-/// `codex exec "<prompt>" --json` (or `codex exec resume <id> …`) with
-/// `sandbox_mode="read-only"`. The final assistant message and the session id
-/// are parsed from the JSONL event stream; session-id capture is best-effort
-/// (openai/codex#3817) — when it fails the controller replays the thread next
-/// turn instead of resuming.
+/// `codex exec "<prompt>" --json` (or `codex exec resume <id> …`) with the
+/// sandbox DISABLED — see the comment on the arguments below for why. The
+/// final assistant message and the session id are parsed from the JSONL event
+/// stream; session-id capture is best-effort (openai/codex#3817) — when it
+/// fails the controller replays the thread next turn instead of resuming.
 struct CodexEngine: AgentEngine {
     let kind = AgentEngineKind.codex
 
@@ -258,16 +258,21 @@ struct CodexEngine: AgentEngine {
         if let sessionID {
             arguments += ["resume", sessionID]
         }
-        // The simple-pdf MCP server is disabled for Codex runs: under any
-        // sandbox other than danger-full-access, Codex cancels every MCP tool
-        // call ("user cancelled MCP tool call"), so leaving it visible only
-        // wastes turns on doomed calls. Read-only stays non-negotiable; the
-        // prompt gives Codex the page text directly instead.
+        // SANDBOX IS DELIBERATELY OFF (danger-full-access), a user decision:
+        // Codex (0.141) cancels every MCP tool call ("user cancelled MCP tool
+        // call") under ANY restricted sandbox — read-only, workspace-write
+        // (even with network_access=true), stdio-bridged servers, approvals
+        // and guardian disabled all still cancel; only danger-full-access lets
+        // MCP through. We chose working simple-pdf MCP context over sandbox
+        // enforcement. This means "read-only" for Codex is enforced ONLY by
+        // the prompt's instructions, not by the OS. If a future Codex allows
+        // MCP under read-only, restore sandbox_mode="read-only" here and see
+        // AgentEngineKind.supportsMCP.
         arguments += [
             "--json",
             "--skip-git-repo-check",
-            "-c", "sandbox_mode=\"read-only\"",
-            "-c", "mcp_servers.\(MCPService.serverName).enabled=false",
+            "-c", "sandbox_mode=\"danger-full-access\"",
+            "-c", "approval_policy=\"never\"",
             prompt
         ]
 

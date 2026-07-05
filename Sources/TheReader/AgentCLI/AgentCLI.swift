@@ -33,12 +33,11 @@ enum AgentEngineKind: String, CaseIterable, Identifiable, Sendable {
     /// Only Claude Code gets the region snapshot PNG; Codex is text-only.
     var supportsImages: Bool { self == .claudeCode }
 
-    /// Whether the engine can actually reach the reader's MCP server. Codex
-    /// (as of 0.141) cancels every MCP tool call unless the sandbox is
-    /// `danger-full-access` ("user cancelled MCP tool call"), and we never run
-    /// it outside read-only — so its runs disable the server and the prompt
-    /// must not point it there.
-    var supportsMCP: Bool { self == .claudeCode }
+    /// Whether the engine can actually reach the reader's MCP server. Both can
+    /// today — but Codex only because its runs turn the sandbox OFF (see
+    /// `CodexEngine`); if that trade-off is ever reverted, flip this back to
+    /// `self == .claudeCode` so the prompt stops pointing Codex at the server.
+    var supportsMCP: Bool { true }
 
     func makeEngine() -> AgentEngine {
         switch self {

@@ -99,19 +99,21 @@ does not embed an LLM.
     `ReaderStore.addHumanReply` → `humanReplyAdded` auto-runs it on every
     composer send (a reply landing mid-run queues exactly one follow-up run).
     Scratch cwd for all runs: `~/Library/Application Support/SimplePDF/agent/`.
-  - Agents get PDF context **MCP-first where possible**: `SimplePDFMCP` (in
-    `AgentCLI.swift`) lists the server's read-only vs mutating tools. Claude
-    gets the server attached explicitly via `--mcp-config` +
-    `--strict-mcp-config` (it's not in user scope) with only read-only
-    `mcp__simple-pdf__*` tools allowed, and its prompt says MCP-first, PDF
-    path as fallback. **Codex cannot use MCP**: as of codex 0.141 every MCP
-    tool call is cancelled ("user cancelled MCP tool call") under any sandbox
-    except `danger-full-access` — verified empirically (approval_policy=never,
-    guardian off, workspace-write+network_access, and a stdio `mcp-remote`
-    bridge all still cancel). Read-only is non-negotiable, so Codex runs pass
-    `-c mcp_servers.simple-pdf.enabled=false` (no doomed calls) and its prompt
-    variant (`AgentEngineKind.supportsMCP == false`) says to rely on the
-    embedded page text / direct file reads instead.
+  - Agents get PDF context **MCP-first**: `SimplePDFMCP` (in `AgentCLI.swift`)
+    lists the server's read-only vs mutating tools; the prompt says MCP-first,
+    PDF path as fallback. Claude gets the server attached explicitly via
+    `--mcp-config` + `--strict-mcp-config` (it's not in user scope) with only
+    read-only `mcp__simple-pdf__*` tools allowed, under a true read-only tool
+    allowlist. **Codex runs with the sandbox OFF by explicit user decision**:
+    codex 0.141 cancels every MCP tool call ("user cancelled MCP tool call")
+    under any sandbox except `danger-full-access` — verified empirically
+    (approval_policy=never, guardian off, workspace-write+network_access, and
+    a stdio `mcp-remote` bridge all still cancel). Working MCP was chosen over
+    sandbox enforcement, so `CodexEngine` passes
+    `-c sandbox_mode="danger-full-access" -c approval_policy="never"` and
+    Codex's read-only behavior is enforced **only by prompt instruction**. To
+    revert: restore `sandbox_mode="read-only"` in `CodexEngine` and flip
+    `AgentEngineKind.supportsMCP` back to Claude-only (comments at both sites).
   - `AgentAnswerBar.swift` — strip above the composer in `CommentThreadPanel`:
     sticky engine toggle buttons (select once → every sent message is
     auto-answered by that engine; click again to turn off), thinking + Cancel
